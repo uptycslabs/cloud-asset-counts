@@ -1,0 +1,4 @@
+azure-identity 
+azure-mgmt-subscription 
+azure-mgmt-compute 
+azure-mgmt-containerservice
