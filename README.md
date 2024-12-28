@@ -36,11 +36,10 @@ Note <cross_account_role_name> is not the full ARN, it is just the last (name) p
   * bash (Can run from GCP CloudShell)
   
 ## Execution
-* Login: `az login`
 * Run: `./uptycs_gcp_counts.sh`  
 
 ## Output
-  * Output is written to a file named: `uptycs_azure_counts_<tenant_id>_<date>.csv`
-  * Output coluns are: `subscription, region, vm_count, aks_node_count` 
-  * The final row in the CSV output contains the TOTALS  
+  * Output is written to a file named: `uptycs_gcp_counts_<org_id>.csv`
+  * Output columns are: `project, region, compute_engine_count, gke_node_count` 
+
 
