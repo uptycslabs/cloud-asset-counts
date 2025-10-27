@@ -27,7 +27,8 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-ADAPTIVE_CFG = Config(retries={"max_attempts": 10, "mode": "adaptive"}, user_agent_extra="aws-resource-counter/1.0")
+ADAPTIVE_CFG = Config(retries={"max_attempts": 10, "mode": "adaptive"}, user_agent_extra="aws-resource-counter/1.1")
+
 
 def get_boto3_session_from_creds(creds: Dict[str, str]) -> boto3.Session:
     return boto3.Session(
@@ -39,46 +40,37 @@ def get_boto3_session_from_creds(creds: Dict[str, str]) -> boto3.Session:
 
 def assume_role(sts, account_id: str, role_name: str, external_id: str = None, session_name: str = "aws-resource-count") -> Dict[str, str]:
     role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
-    params = {
-        "RoleArn": role_arn,
-        "RoleSessionName": session_name,
-        "DurationSeconds": 3600,
-    }
+    params = {"RoleArn": role_arn, "RoleSessionName": session_name, "DurationSeconds": 3600}
     if external_id:
         params["ExternalId"] = external_id
-    resp = sts.assume_role(**params)
-    return resp["Credentials"]
+    return sts.assume_role(**params)["Credentials"]
 
 
 def list_org_accounts(mgmt_session: boto3.Session) -> List[Dict[str, str]]:
     org = mgmt_session.client("organizations", config=ADAPTIVE_CFG)
-    accounts = []
-    token = None
+    accounts, token = [], None
     while True:
         kwargs = {"MaxResults": 20}
         if token:
             kwargs["NextToken"] = token
         resp = org.list_accounts(**kwargs)
-        for a in resp.get("Accounts", []):
-            if a.get("Status") == "ACTIVE":
-                accounts.append({"Id": a["Id"], "Name": a.get("Name", "")})
+        accounts.extend([{"Id": a["Id"], "Name": a.get("Name", "")} for a in resp.get("Accounts", []) if a["Status"] == "ACTIVE"])
         token = resp.get("NextToken")
         if not token:
             break
     return accounts
 
 
-def get_all_regions(base_session: boto3.Session) -> List[str]:
-    ec2 = base_session.client("ec2", region_name="us-east-1", config=ADAPTIVE_CFG)
-    regions = ec2.describe_regions(AllRegions=True)["Regions"]
-    return [r["RegionName"] for r in regions if r.get("OptInStatus") in ("opt-in-not-required", "opted-in")]
+def get_all_regions(session: boto3.Session) -> List[str]:
+    ec2 = session.client("ec2", region_name="us-east-1", config=ADAPTIVE_CFG)
+    return [r["RegionName"] for r in ec2.describe_regions(AllRegions=True)["Regions"] if r["OptInStatus"] in ("opt-in-not-required", "opted-in")]
 
-def count_ec2(session: boto3.Session, region: str) -> int:
+
+def count_ec2(session, region):
     ec2 = session.client("ec2", region_name=region, config=ADAPTIVE_CFG)
-    count = 0
-    token = None
+    count, token = 0, None
     while True:
-        kwargs = {}
+        kwargs = {"MaxResults": 1000}
         if token:
             kwargs["NextToken"] = token
         resp = ec2.describe_instances(**kwargs)
@@ -90,60 +82,29 @@ def count_ec2(session: boto3.Session, region: str) -> int:
     return count
 
 
-def count_lambda(session: boto3.Session, region: str) -> int:
+def count_lambda(session, region):
     lam = session.client("lambda", region_name=region, config=ADAPTIVE_CFG)
-    count = 0
-    token = None
+    total, token = 0, None
     while True:
         kwargs = {"MaxItems": 50}
         if token:
             kwargs["Marker"] = token
         resp = lam.list_functions(**kwargs)
-        count += len(resp.get("Functions", []))
+        total += len(resp.get("Functions", []))
         token = resp.get("NextMarker")
         if not token:
             break
-    return count
+    return total
 
 
-def count_ecs(session: boto3.Session, region: str) -> Tuple[int, int]:
-    ecs = session.client("ecs", region_name=region, config=ADAPTIVE_CFG)
-    # clusters
-    clusters = []
-    token = None
-    while True:
-        kwargs = {"maxResults": 100}
-        if token:
-            kwargs["nextToken"] = token
-        resp = ecs.list_clusters(**kwargs)
-        clusters.extend(resp.get("clusterArns", []))
-        token = resp.get("nextToken")
-        if not token:
-            break
-    total_services = 0
-    for arn in clusters:
-        stoken = None
-        while True:
-            skw = {"cluster": arn, "maxResults": 10}
-            if stoken:
-                skw["nextToken"] = stoken
-            sresp = ecs.list_services(**skw)
-            total_services += len(sresp.get("serviceArns", []))
-            stoken = sresp.get("nextToken")
-            if not stoken:
-                break
-    return len(clusters), total_services
-
-
-def count_s3(session: boto3.Session) -> int:
+def count_s3(session):
     s3 = session.client("s3", config=ADAPTIVE_CFG)
-    resp = s3.list_buckets()
-    return len(resp.get("Buckets", []))
+    return len(s3.list_buckets().get("Buckets", []))
 
 
-def count_iam(session: boto3.Session) -> Tuple[int, int]:
+def count_iam(session):
     iam = session.client("iam", config=ADAPTIVE_CFG)
-    users = 0
+    users = roles = 0
     token = None
     while True:
         kwargs = {"MaxItems": 1000}
@@ -154,7 +115,6 @@ def count_iam(session: boto3.Session) -> Tuple[int, int]:
         token = resp.get("Marker") if resp.get("IsTruncated") else None
         if not token:
             break
-    roles = 0
     token = None
     while True:
         kwargs = {"MaxItems": 1000}
@@ -168,11 +128,74 @@ def count_iam(session: boto3.Session) -> Tuple[int, int]:
     return users, roles
 
 
-# NEW: EKS counts (clusters + nodegroups)
-def count_eks(session: boto3.Session, region: str) -> Tuple[int, int]:
+def count_ecs(session, region):
+    ecs = session.client("ecs", region_name=region, config=ADAPTIVE_CFG)
+    clusters, token = [], None
+    while True:
+        kwargs = {"maxResults": 100}
+        if token:
+            kwargs["nextToken"] = token
+        resp = ecs.list_clusters(**kwargs)
+        clusters.extend(resp.get("clusterArns", []))
+        token = resp.get("nextToken")
+        if not token:
+            break
+
+    ecs_services = ecs_ec2 = ecs_fargate = tasks_ec2 = tasks_fargate = 0
+
+    for cluster in clusters:
+        # --- Count services ---
+        stoken = None
+        while True:
+            skw = {"cluster": cluster, "maxResults": 10}
+            if stoken:
+                skw["nextToken"] = stoken
+            sresp = ecs.list_services(**skw)
+            service_arns = sresp.get("serviceArns", [])
+            if service_arns:
+                desc = ecs.describe_services(cluster=cluster, services=service_arns)
+                for s in desc.get("services", []):
+                    ecs_services += 1
+                    if s.get("launchType") == "FARGATE":
+                        ecs_fargate += 1
+                        tasks_fargate += s.get("runningCount", 0)
+                    else:
+                        ecs_ec2 += 1
+                        tasks_ec2 += s.get("runningCount", 0)
+            stoken = sresp.get("nextToken")
+            if not stoken:
+                break
+
+        # --- Count standalone tasks not tied to a service ---
+        ttoken = None
+        while True:
+            tkw = {"cluster": cluster, "maxResults": 100}
+            if ttoken:
+                tkw["nextToken"] = ttoken
+            tresp = ecs.list_tasks(**tkw)
+            task_arns = tresp.get("taskArns", [])
+            if not task_arns:
+                break
+            tdesc = ecs.describe_tasks(cluster=cluster, tasks=task_arns)
+            for t in tdesc.get("tasks", []):
+                launch_type = t.get("launchType")
+                # skip if this task belongs to a service (already counted)
+                if t.get("group", "").startswith("service:"):
+                    continue
+                if launch_type == "FARGATE":
+                    tasks_fargate += 1
+                else:
+                    tasks_ec2 += 1
+            ttoken = tresp.get("nextToken")
+            if not ttoken:
+                break
+
+    return len(clusters), ecs_services, ecs_ec2, ecs_fargate, tasks_ec2, tasks_fargate
+
+
+def count_eks(session, region):
     eks = session.client("eks", region_name=region, config=ADAPTIVE_CFG)
-    clusters: List[str] = []
-    token = None
+    clusters, token = [], None
     while True:
         kwargs = {"maxResults": 100}
         if token:
@@ -183,54 +206,60 @@ def count_eks(session: boto3.Session, region: str) -> Tuple[int, int]:
         if not token:
             break
 
-    total_ng = 0
-    for name in clusters:
+    total_ng = total_nodes = 0
+    for c in clusters:
         ng_token = None
         while True:
-            ng_kwargs = {"clusterName": name, "maxResults": 100}
+            ng_kwargs = {"clusterName": c, "maxResults": 100}
             if ng_token:
                 ng_kwargs["nextToken"] = ng_token
             ng_resp = eks.list_nodegroups(**ng_kwargs)
-            total_ng += len(ng_resp.get("nodegroups", []))
+            nodegroups = ng_resp.get("nodegroups", [])
+            total_ng += len(nodegroups)
+            for ng in nodegroups:
+                try:
+                    desc = eks.describe_nodegroup(clusterName=c, nodegroupName=ng)
+                    asgs = desc["nodegroup"]["resources"].get("autoScalingGroups", [])
+                    asg_client = session.client("autoscaling", region_name=region, config=ADAPTIVE_CFG)
+                    for asg in asgs:
+                        ag = asg_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg["name"]])
+                        for g in ag.get("AutoScalingGroups", []):
+                            total_nodes += len(g.get("Instances", []))
+                except ClientError:
+                    pass
             ng_token = ng_resp.get("nextToken")
             if not ng_token:
                 break
-    return len(clusters), total_ng
+    return len(clusters), total_ng, total_nodes
 
 
-def count_for_account(base_session: boto3.Session, account_id: str, account_name: str, regions: List[str], assume_role_name: str, external_id: str = None, use_current_session: bool = False) -> Dict[str, int]:
+def count_for_account(base_session, account_id, account_name, regions, assume_role_name, external_id=None, use_current_session=False):
     sts = base_session.client("sts", config=ADAPTIVE_CFG)
-    sess: boto3.Session
     if use_current_session:
         sess = base_session
     else:
         try:
             creds = assume_role(sts, account_id, assume_role_name, external_id)
+            sess = get_boto3_session_from_creds(creds)
         except ClientError as e:
-            return {
-                "account_id": account_id,
-                "account_name": account_name,
-                "error": f"AssumeRole failed: {e.response['Error'].get('Message', str(e))}",
-            }
-        sess = get_boto3_session_from_creds(creds)
+            return {"account_id": account_id, "account_name": account_name, "error": f"AssumeRole failed: {e}"}
 
     try:
         s3_count = count_s3(sess)
-    except ClientError as e:
+    except ClientError:
         s3_count = -1
     try:
         iam_users, iam_roles = count_iam(sess)
-    except ClientError as e:
+    except ClientError:
         iam_users, iam_roles = -1, -1
 
-    def regional_worker(region: str) -> Tuple[str, Dict[str, int]]:
+    def region_worker(region):
         result = {
             "ec2": 0,
             "lambda": 0,
-            "ecs_clusters": 0,
-            "ecs_services": 0,
-            "eks_clusters": 0,       # NEW
-            "eks_nodegroups": 0      # NEW
+            "ecs_clusters": 0, "ecs_services": 0, "ecs_ec2": 0, "ecs_fargate": 0,
+            "ecs_tasks_ec2": 0, "ecs_tasks_fargate": 0,
+            "eks_clusters": 0, "eks_nodegroups": 0, "eks_nodes": 0
         }
         try:
             result["ec2"] = count_ec2(sess, region)
@@ -241,206 +270,95 @@ def count_for_account(base_session: boto3.Session, account_id: str, account_name
         except ClientError:
             pass
         try:
-            c, s = count_ecs(sess, region)
-            result["ecs_clusters"], result["ecs_services"] = c, s
+            c, s, e2, fg, te2, tfg = count_ecs(sess, region)
+            result.update({"ecs_clusters": c, "ecs_services": s, "ecs_ec2": e2, "ecs_fargate": fg, "ecs_tasks_ec2": te2, "ecs_tasks_fargate": tfg})
         except ClientError:
             pass
         try:
-            kc, ng = count_eks(sess, region)   # NEW
-            result["eks_clusters"], result["eks_nodegroups"] = kc, ng
+            kc, ng, nd = count_eks(sess, region)
+            result.update({"eks_clusters": kc, "eks_nodegroups": ng, "eks_nodes": nd})
         except ClientError:
             pass
-        return region, result
+        return result
 
-    regional_totals = {
-        "ec2": 0,
-        "lambda": 0,
-        "ecs_clusters": 0,
-        "ecs_services": 0,
-        "eks_clusters": 0,      # NEW
-        "eks_nodegroups": 0     # NEW
-    }
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(regions) or 1)) as exe:
-        for _, res in exe.map(regional_worker, regions):
+    totals = {k: 0 for k in ["ec2", "lambda", "ecs_clusters", "ecs_services", "ecs_ec2", "ecs_fargate",
+                             "ecs_tasks_ec2", "ecs_tasks_fargate", "eks_clusters", "eks_nodegroups", "eks_nodes"]}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(regions))) as exe:
+        for res in exe.map(region_worker, regions):
             for k, v in res.items():
-                regional_totals[k] += v
+                totals[k] += v
 
-    output = {
-        "account_id": account_id,
-        "account_name": account_name,
-        "ec2": regional_totals["ec2"],
-        "lambda": regional_totals["lambda"],
-        "s3_buckets": s3_count,
-        "iam_users": iam_users,
-        "iam_roles": iam_roles,
-        "ecs_clusters": regional_totals["ecs_clusters"],
-        "ecs_services": regional_totals["ecs_services"],
-        "eks_clusters": regional_totals["eks_clusters"],        # NEW
-        "eks_nodegroups": regional_totals["eks_nodegroups"],    # NEW
-    }
-    return output
+    totals.update({"s3_buckets": s3_count, "iam_users": iam_users, "iam_roles": iam_roles,
+                   "account_id": account_id, "account_name": account_name})
+    return totals
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Count AWS resources in one or many accounts.", epilog=EXAMPLES, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mode", choices=["org", "account"], required=True, help="'org' to enumerate all ACTIVE accounts in the organization, 'account' for a single account")
-    parser.add_argument("--management-account-id", help="Management (payer) account ID (required for --mode org)")
-    parser.add_argument("--account-id", help="Child account ID (required for --mode account)")
-    parser.add_argument("--assume-role-name", default="OrganizationAccountAccessRole", help="Role name to assume in target accounts (ignored when --use-current-session applies)")
-    parser.add_argument("--external-id", default=None, help="External ID required by the assume role (optional)")
-    parser.add_argument("--regions", nargs="*", default=None, help="Specific regions to scan (default: all enabled regions)")
-    parser.add_argument("--output", choices=["table", "json", "csv"], default="table", help="Output format")
-    parser.add_argument("--use-current-session", action="store_true", help="Use current AWS credentials for the target account (skip STS AssumeRole). If --mode account and the caller account matches --account-id, this is implied.")
-    parser.add_argument("--profile", default=None, help="AWS profile to use (overrides AWS_PROFILE env var)")
-    parser.add_argument("--log-file", default=None, help="If set, append a JSON log line with results to this file (JSONL format)")
+    parser = argparse.ArgumentParser(description="Count AWS resources (compute first, then others).", epilog=EXAMPLES, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--mode", choices=["org", "account"], required=True)
+    parser.add_argument("--management-account-id")
+    parser.add_argument("--account-id")
+    parser.add_argument("--assume-role-name", default="OrganizationAccountAccessRole")
+    parser.add_argument("--external-id")
+    parser.add_argument("--regions", nargs="*")
+    parser.add_argument("--output", choices=["table", "json", "csv"], default="table")
+    parser.add_argument("--use-current-session", action="store_true")
+    parser.add_argument("--profile")
+    parser.add_argument("--log-file")
 
     args = parser.parse_args()
+    base = boto3.Session(profile_name=args.profile) if args.profile else boto3.Session()
+    caller = base.client("sts", config=ADAPTIVE_CFG).get_caller_identity().get("Account", "")
 
-    base_session = boto3.Session(profile_name=args.profile) if args.profile else boto3.Session()
-
-    caller_acct = None
-    try:
-        caller_acct = base_session.client("sts", config=ADAPTIVE_CFG).get_caller_identity()["Account"]
-    except Exception:
-        pass
-
-    targets: List[Tuple[str, str]] = []
-
+    targets = []
     if args.mode == "org":
-        if not args.management_account_id:
-            print("--management-account-id is required when --mode org", file=sys.stderr)
-            sys.exit(2)
-        accounts = list_org_accounts(base_session)
-        if not accounts:
-            print("No ACTIVE accounts found in the organization.")
-            sys.exit(0)
-        targets = [(a["Id"], a.get("Name", "")) for a in accounts]
+        accts = list_org_accounts(base)
+        targets = [(a["Id"], a["Name"]) for a in accts]
     else:
-        if not args.account_id:
-            print("--account-id is required when --mode account", file=sys.stderr)
-            sys.exit(2)
         targets = [(args.account_id, "")]
 
-    regions = args.regions or get_all_regions(base_session)
-    if not regions:
-        print("No enabled regions discovered.", file=sys.stderr)
-        sys.exit(2)
+    regions = args.regions or get_all_regions(base)
+    results = [count_for_account(base, aid, name, regions, args.assume_role_name, args.external_id, args.use_current_session or (caller == aid)) for aid, name in targets]
 
-    results: List[Dict[str, int]] = []
-
-    for acct_id, acct_name in targets:
-        summary = count_for_account(
-            base_session,
-            account_id=acct_id,
-            account_name=acct_name,
-            regions=regions,
-            assume_role_name=args.assume_role_name,
-            external_id=args.external_id,
-            use_current_session=(args.use_current_session or (caller_acct == acct_id)),
-        )
-        results.append(summary)
-
-    totals = {
-        "accounts": len(results),
-        "ec2": sum(r.get("ec2", 0) for r in results if "ec2" in r),
-        "lambda": sum(r.get("lambda", 0) for r in results if "lambda" in r),
-        "s3_buckets": sum(r.get("s3_buckets", 0) for r in results if "s3_buckets" in r),
-        "iam_users": sum(r.get("iam_users", 0) for r in results if "iam_users" in r),
-        "iam_roles": sum(r.get("iam_roles", 0) for r in results if "iam_roles" in r),
-        "ecs_clusters": sum(r.get("ecs_clusters", 0) for r in results if "ecs_clusters" in r),
-        "ecs_services": sum(r.get("ecs_services", 0) for r in results if "ecs_services" in r),
-        "eks_clusters": sum(r.get("eks_clusters", 0) for r in results if "eks_clusters" in r),           # NEW
-        "eks_nodegroups": sum(r.get("eks_nodegroups", 0) for r in results if "eks_nodegroups" in r),     # NEW
-    }
-
-    if args.log_file:
-        log_entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "mode": args.mode,
-            "management_account_id": args.management_account_id,
-            "account_id": args.account_id,
-            "profile": args.profile,
-            "regions": regions,
-            "results": results,
-            "totals": totals,
-        }
-        try:
-            with open(args.log_file, "a", encoding="utf-8") as lf:
-                lf.write(json.dumps(log_entry) + "\n")
-        except Exception as e:
-            print(f"[warn] failed to write log file {args.log_file}: {e}", file=sys.stderr)
+    totals = {k: sum(r.get(k, 0) for r in results if k in r) for k in results[0].keys() if k not in ("account_id", "account_name", "error")}
 
     if args.output == "json":
         print(json.dumps({"results": results, "totals": totals}, indent=2))
         return
 
-    if args.output == "csv":
-        writer = csv.writer(sys.stdout)
-        writer.writerow([
-            "account_id", "account_name",
-            "ec2", "lambda", "s3_buckets", "iam_users", "iam_roles",
-            "ecs_clusters", "ecs_services",
-            "eks_clusters", "eks_nodegroups"   # NEW
-        ])
-        for r in results:
-            writer.writerow([
-                r.get("account_id"),
-                r.get("account_name", ""),
-                r.get("ec2", r.get("error", "")),
-                r.get("lambda", ""),
-                r.get("s3_buckets", ""),
-                r.get("iam_users", ""),
-                r.get("iam_roles", ""),
-                r.get("ecs_clusters", ""),
-                r.get("ecs_services", ""),
-                r.get("eks_clusters", ""),
-                r.get("eks_nodegroups", ""),
-            ])
-        writer.writerow([
-            "TOTAL", "",
-            totals["ec2"], totals["lambda"], totals["s3_buckets"], totals["iam_users"], totals["iam_roles"],
-            totals["ecs_clusters"], totals["ecs_services"],
-            totals["eks_clusters"], totals["eks_nodegroups"]
-        ])
-        return
-
     header = [
-        ("Account ID", 14), ("Name", 24),
-        ("EC2", 7), ("Lambda", 8), ("S3", 6),
-        ("IAM Users", 11), ("IAM Roles", 11),
-        ("ECS Clusters", 13), ("ECS Services", 13),
-        ("EKS Clusters", 13), ("EKS NodeGrps", 13)  # NEW
+        ("Account ID", 14), ("Name", 20),
+        ("EC2", 6), ("ECS-Tasks-Fargate", 20), ("Lambda", 8),
+        ("EKS-Clusters", 13), ("EKS-NodeGroups", 15), ("EKS-Nodes", 11),
+        ("ECS-Clusters", 14), ("ECS-Services", 14),
+        ("ECS-Services-EC2", 17), ("ECS-Services-Fargate", 20),
+        ("ECS-Tasks-EC2", 17),
+        ("S3", 6), ("IAM Users", 11), ("IAM Roles", 11)
     ]
-    def fmt_row(cols, widths):
-        return " ".join(str(c)[:w].ljust(w) for (c, w) in zip(cols, widths))
     widths = [w for _, w in header]
-    print(fmt_row([h for h, _ in header], widths))
-    print("-" * (sum(widths) + len(widths) - 1))
+    def fmt(cols): return " ".join(str(c)[:w].ljust(w) for c, w in zip(cols, widths))
+    print(fmt([h for h, _ in header]))
+    print("-" * (sum(widths) + len(widths)))
+
     for r in results:
-        if "error" in r:
-            # merge all numeric columns into one wide error cell, keep trailing blanks for remaining columns
-            merged_width = sum(widths[2:]) + len(widths[2:]) - 1
-            print(fmt_row(
-                [r.get("account_id"), r.get("account_name", ""), r["error"]] + [""] * (len(widths) - 3),
-                [14, 24, merged_width] + [0] * (len(widths) - 3)
-            ))
-            continue
-        print(fmt_row([
-            r.get("account_id"), r.get("account_name", ""),
-            r.get("ec2", 0), r.get("lambda", 0), r.get("s3_buckets", 0),
-            r.get("iam_users", 0), r.get("iam_roles", 0),
-            r.get("ecs_clusters", 0), r.get("ecs_services", 0),
-            r.get("eks_clusters", 0), r.get("eks_nodegroups", 0)
-        ], widths))
+        print(fmt([
+            r["account_id"], r["account_name"],
+            r["ec2"], r["ecs_tasks_fargate"], r["lambda"],
+            r["eks_clusters"], r["eks_nodegroups"], r["eks_nodes"],
+            r["ecs_clusters"], r["ecs_services"],
+            r["ecs_ec2"], r["ecs_fargate"], r["ecs_tasks_ec2"],
+            r["s3_buckets"], r["iam_users"], r["iam_roles"]
+        ]))
+
     print("\nTOTALS:")
-    print(fmt_row([
+    print(fmt([
         "Accounts", "",
-        totals["ec2"], totals["lambda"], totals["s3_buckets"],
-        totals["iam_users"], totals["iam_roles"],
+        totals["ec2"], totals["ecs_tasks_fargate"], totals["lambda"],
+        totals["eks_clusters"], totals["eks_nodegroups"], totals["eks_nodes"],
         totals["ecs_clusters"], totals["ecs_services"],
-        totals["eks_clusters"], totals["eks_nodegroups"]
-    ], widths))
+        totals["ecs_ec2"], totals["ecs_fargate"], totals["ecs_tasks_ec2"],
+        totals["s3_buckets"], totals["iam_users"], totals["iam_roles"]
+    ]))
 
 
 if __name__ == "__main__":
