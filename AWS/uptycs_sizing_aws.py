@@ -1,75 +1,6 @@
 #!/usr/bin/env python3
-"""Count AWS resources (EC2, ECS, EKS, Lambda, S3, IAM) for a single account or an
-entire organization, to help size an Uptycs deployment.
 
-A few things worth knowing about how the counts are reported:
-
-* EC2 - counts running and stopped instances. Instances that are shutting down or
-  already terminated are not counted, since they are no longer billable.
-
-* EC2 vs containers - a server can serve more than one purpose at once, so the
-  script takes care not to count the same machine twice. A machine registered to
-  run ECS tasks is reported under "Container Hosts", and a machine acting as an
-  EKS worker node is reported under "EKS-Nodes"; in both cases it is not also
-  counted under EC2. Machines that are not EC2 instances -- such as on-premises
-  ECS Anywhere hosts or the nodes EKS Auto Mode runs for you -- are counted in
-  addition to your EC2 total, since they are genuinely separate machines.
-
-* ECS - services and tasks are split into Fargate (serverless) and EC2 (running
-  on your own instances).
-
-* EKS Auto Mode - counting the worker nodes that EKS Auto Mode manages for you
-  requires boto3/botocore 1.42.94 or newer. On older versions the script still
-  runs and prints a NOTE, but those nodes are left out of the count.
-
-Version: 1.0
-Last modified: 2026-07-09
-"""
-
-EXAMPLES = """\
-Examples:
-
-  --- Single account ---
-
-  Scan a specific account with your current credentials (no role assumed)
-    python3 uptycs_sizing_aws.py --mode account --account-id 123456789012 --use-current-session --output json
-
-  Scan another account by assuming a role into it
-    python3 uptycs_sizing_aws.py --mode account --account-id 222233334444 --assume-role-name OrganizationAccountAccessRole --output table
-
-  Assume a role that requires an ExternalId
-    python3 uptycs_sizing_aws.py --mode account --account-id 222233334444 --assume-role-name UptycsSizingRole --external-id my-external-id --output json
-
-  --- Organization-wide ---
-  (run with management-account or delegated-admin credentials, e.g. via --profile)
-
-  Org-wide from management
-    python3 uptycs_sizing_aws.py --mode org --management-account-id 123456789012 --assume-role-name OrganizationAccountAccessRole --output table
-
-  Org-wide with a named profile
-    python3 uptycs_sizing_aws.py --mode org --management-account-id 123456789012 --assume-role-name OrganizationAccountAccessRole --profile mgmt --output json
-
-  Org-wide where the member-account roles require an ExternalId
-    python3 uptycs_sizing_aws.py --mode org --management-account-id 123456789012 --assume-role-name UptycsSizingRole --external-id my-external-id --output json
-
-  --- Regions ---
-
-  Limit the scan to specific regions (faster; skips ec2:DescribeRegions)
-    python3 uptycs_sizing_aws.py --mode account --account-id 123456789012 --use-current-session --regions us-east-1 us-west-2 --output csv
-
-  --- Output to a file ---
-
-  JSON to an auto-named file (uptycs_sizing_<scope>_<timestamp>.json)
-    python3 uptycs_sizing_aws.py --mode org --management-account-id 123456789012 --assume-role-name OrganizationAccountAccessRole --output json --write-file
-
-  CSV to a specific path
-    python3 uptycs_sizing_aws.py --mode org --management-account-id 123456789012 --assume-role-name OrganizationAccountAccessRole --output csv --write-file sizing.csv
-
-  --- Without activating a venv (uv) ---
-
-  Run in one shot with the dependency pinned
-    uv run --with "boto3>=1.42.94" python3 uptycs_sizing_aws.py --mode account --account-id 123456789012 --use-current-session --output json
-"""
+# Please refer README.md for more information on how to use the script
 
 import argparse
 import concurrent.futures
@@ -580,7 +511,7 @@ def main():
     depending on the options given, and reports the counts as a table, JSON, or
     CSV -- one row per account with a totals line at the end.
     """
-    parser = argparse.ArgumentParser(description="Count AWS resources (compute first, then others).", epilog=EXAMPLES, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description="Count AWS resources (compute first, then others).", formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=["org", "account"], required=True)
     parser.add_argument("--management-account-id")
     parser.add_argument("--account-id")
