@@ -216,17 +216,13 @@ The same set of columns drives the table and CSV, so they always match:
 
 ### Table (default)
 
-A fixed-width table is printed to stdout, with a `TOTALS` line at the end.
+A fixed-width table is printed to stdout, with a `TOTALS` line at the end. It is wide (17 columns), so the raw console output wraps in a narrow terminal. The same data is shown below as a table for readability:
 
-```
-Account ID     Name                 EC2    ECS-Container-Hosts  ECS-Tasks-Fargate    Lambda   EKS-Clusters  ...
-------------------------------------------------------------------------------------------------------------
-111122223333   prod-infra           87     6                    14                   145      2             ...
-222233334444   sandbox              3      0                    0                    12       0             ...
-
-TOTALS:
-Accounts             90     6                    14                   157      2             ...
-```
+| Account ID   | Name       | EC2 | ECS-Container-Hosts | ECS-Tasks-Fargate | Lambda | EKS-Clusters | EKS-NodeGroups | EKS-Nodes | ECS-Clusters | ECS-Services | ECS-EC2 | ECS-Fargate | ECS-Tasks-EC2 | S3-Buckets | IAM Users | IAM Roles |
+| ------------ | ---------- | --- | ------------------- | ----------------- | ------ | ------------ | -------------- | --------- | ------------ | ------------ | ------- | ----------- | ------------- | ---------- | --------- | --------- |
+| 111122223333 | prod-infra | 87  | 6                   | 14                | 145    | 2            | 4              | 12        | 5            | 38           | 30      | 8           | 60            | 12         | 20        | 72        |
+| 222233334444 | sandbox    | 3   | 0                   | 0                 | 12     | 0            | 0              | 0         | 1            | 3            | 3       | 0           | 5             | 4          | 2         | 10        |
+| **TOTALS**   |            | 90  | 6                   | 14                | 157    | 2            | 4              | 12        | 6            | 41           | 33      | 8           | 65            | 16         | 22        | 82        |
 
 > If an account can’t be assumed, the row shows zeros and an `error` note explaining why, so one account never hides the rest of the report.
 
