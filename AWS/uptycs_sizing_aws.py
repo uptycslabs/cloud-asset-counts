@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
-# Please refer README.md for more information on how to use the script
+""" 
+Please refer README.md for more information on how to use the script
+
+Version: 1.0
+"""
 
 import argparse
 import concurrent.futures
