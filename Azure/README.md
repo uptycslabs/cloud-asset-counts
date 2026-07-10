@@ -1,7 +1,7 @@
 # Azure Resource Counter (`uptycs_sizing_azure.py`)
 
 Count key Azure compute resources across a single subscription or every **enabled** subscription
-your credential can see (tenant-wide), plus Entra ID identities.
+your credential can see (tenant-wide).
 Outputs in **table**, **CSV**, or **JSON** (to stdout or to a file).
 
 Resources counted:
@@ -12,7 +12,6 @@ Resources counted:
 - **Azure Container Instances** — container groups and **containers**
 - **App Service** — **Functions** and **Web Apps** (split by site kind)
 - **Container Apps** — apps and managed **environments**
-- **Entra ID** — users & roles _(tenant-level, counted once per run)_
 
 Azure ARM list APIs are **subscription-wide** (not per-region), so the script iterates
 **subscriptions** the way the AWS script iterates regions — each subscription is scanned in
@@ -40,9 +39,8 @@ These mirror the accuracy caveats in the AWS tool — counts come from the Azure
 - 🧩 **Modular**: a small counter registry drives which resources are counted and the output columns — adding a resource type is a one-line change.
 - 🧮 **De-duplicated VMs**: scale-set instances are not double-counted as VMs.
 - 🧵 **Parallel per-subscription** scans (up to 16 workers).
-- 🪪 **Entra ID** counts via Microsoft Graph (uses only the Python standard library — no extra SDK).
 - 🧾 **Multiple output formats**: table (pretty), CSV, JSON — printed to stdout or written to a file.
-- 🛟 **Resilient**: a per-service failure contributes `0` and the rest of the row still renders; Entra reports `-1` when unavailable.
+- 🛟 **Resilient**: a per-service failure contributes `0` and the rest of the row still renders.
 
 > **Note on the table view:** the column widths are intentionally fixed in the code to keep alignment consistent in a plain console. It is wide (14 columns), so raw output wraps in a narrow terminal.
 
@@ -62,8 +60,6 @@ azure-mgmt-containerinstance
 azure-mgmt-web
 azure-mgmt-appcontainers
 ```
-
-> Entra ID counting uses only the Python standard library — no extra package.
 
 Modern Python (PEP 668) blocks installing into the system interpreter, so use a virtualenv:
 
@@ -87,12 +83,8 @@ The script uses `DefaultAzureCredential`, which picks up either automatically.
 
 ### Azure permissions
 
-- **Resource counting**: the built-in **Reader** role on each target subscription. That alone
-  covers every compute/resource listing the script performs.
-- **Entra ID counts**: Microsoft Graph **application** permissions **`User.Read.All`** and
-  **`Directory.Read.All`** (granted with admin consent), or run as a user with directory-read
-  rights. Without them the Entra columns report `-1` — pass `--skip-entra` to omit the Graph
-  calls entirely.
+- The built-in **Reader** role on each target subscription. That alone covers every
+  compute/resource listing the script performs.
 
 > **Credential precedence gotcha:** `DefaultAzureCredential` tries the **environment**
 > service principal (`AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_CLIENT_SECRET`) **before**
@@ -112,10 +104,9 @@ Required (choose a mode):
   --mode tenant
 
 Common options:
-  --tenant-id <ID>                 (optional; scopes subscription enumeration + Entra)
+  --tenant-id <ID>                 (optional; scopes subscription enumeration)
   --locations eastus westus2 ...   (optional; default: all regions)
   --output {table,json,csv}        (default: table)
-  --skip-entra                     (skip the Microsoft Graph / Entra ID counts)
   --write-file [PATH]              (json/csv only; auto-names if PATH omitted)
 ```
 
@@ -138,9 +129,6 @@ AZURE_TENANT_ID=... AZURE_CLIENT_ID=... AZURE_CLIENT_SECRET=... \
 python3 uptycs_sizing_azure.py --mode subscription \
   --subscription-id 00000000-0000-0000-0000-000000000000 \
   --locations eastus westus2 --output csv --write-file
-
-# Skip Entra (no Graph permissions available)
-python3 uptycs_sizing_azure.py --mode tenant --skip-entra --output json
 ```
 
 #### Running with `uv` (no venv needed)
@@ -176,13 +164,9 @@ The same set of columns drives the table and CSV, so they always match:
 | Container-Apps     | `container_apps`     | Azure Container Apps                                 |
 | ContainerApp-Envs  | `container_app_envs` | Container Apps managed environments                 |
 
-Entra ID counts (`entra_users`, `entra_roles`) are **tenant-level** and rendered **separately**
-(a block after the table, a top-level `"entra"` key in JSON, a trailing section in CSV) because
-they are the same for every subscription in a tenant.
-
 ### Table (default)
 
-A fixed-width table is printed to stdout with a `TOTALS` line, then the Entra block:
+A fixed-width table is printed to stdout with a `TOTALS` line:
 
 ```text
 Subscription ID       Name          VMs  VMSS  VMSS-Instances  AKS-Clusters  ...
@@ -191,20 +175,16 @@ Subscription ID       Name          VMs  VMSS  VMSS-Instances  AKS-Clusters  ...
 
 TOTALS:
 Subscriptions                       5    5     6               3             ...
-
-ENTRA ID (tenant-level):
-  Users: 32    Roles: 20
 ```
 
 ### CSV
 
-The header row matches the columns above; the final data row is a **TOTALS** summary, followed
-by a small Entra ID section. Use `--write-file [PATH]` to write to a file instead of stdout.
+The header row matches the columns above; the final data row is a **TOTALS** summary.
+Use `--write-file [PATH]` to write to a file instead of stdout.
 
 ### JSON
 
-`results` is one object per subscription; `totals` aggregates the compute fields; `entra` holds
-the tenant-level identity counts (absent when `--skip-entra` is used):
+`results` is one object per subscription; `totals` aggregates the compute fields:
 
 ```json
 {
@@ -226,8 +206,7 @@ the tenant-level identity counts (absent when `--skip-entra` is used):
       "subscription_name": "Sponsors"
     }
   ],
-  "totals": { "vms": 5, "vmss": 5, "vmss_instances": 6, "aks_clusters": 3, "aks_nodepools": 5, "aks_nodes": 6, "aci_groups": 10, "aci_containers": 19, "functions": 4, "web_apps": 2, "container_apps": 1, "container_app_envs": 1 },
-  "entra": { "entra_users": 32, "entra_roles": 20 }
+  "totals": { "vms": 5, "vmss": 5, "vmss_instances": 6, "aks_clusters": 3, "aks_nodepools": 5, "aks_nodes": 6, "aci_groups": 10, "aci_containers": 19, "functions": 4, "web_apps": 2, "container_apps": 1, "container_app_envs": 1 }
 }
 ```
 
@@ -246,9 +225,7 @@ Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is 
    subscription-wide list call — VMs, VMSS (+ instances), AKS (clusters/pools/nodes), ACI
    (groups/containers), App Service (functions/web apps), Container Apps (+ environments).
    Scale-set instances are subtracted from the VM count so nothing is double-counted.
-4. **Entra ID** (unless `--skip-entra`): mint a Microsoft Graph token from the same credential
-   and count users (`/users/$count`) and directory roles (`/directoryRoles`).
-5. **Aggregate totals** and print/output in the selected format.
+4. **Aggregate totals** and print/output in the selected format.
 
 ---
 
@@ -267,10 +244,6 @@ Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is 
 - **`DefaultAzureCredential failed ... EnvironmentCredential: AADSTS700016`**
   - Stale `AZURE_*` service-principal env vars are being tried before your `az login`. Unset
     them, or make sure they point at the correct tenant/app. See the precedence gotcha above.
-
-- **Entra counts show `-1`**
-  - The credential can't read the directory. Grant Graph `User.Read.All` + `Directory.Read.All`
-    (admin consent), or run `--skip-entra`.
 
 - **All compute counts are `0` for a subscription**
   - Either the subscription is genuinely empty, or the credential lacks **Reader** there. A

@@ -11,13 +11,10 @@ import concurrent.futures
 import csv
 import json
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import datetime
 from typing import Dict, List, Tuple
 
-from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
+from azure.core.exceptions import HttpResponseError
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.appcontainers import ContainerAppsAPIClient
 from azure.mgmt.compute import ComputeManagementClient
@@ -25,13 +22,6 @@ from azure.mgmt.containerinstance import ContainerInstanceManagementClient
 from azure.mgmt.containerservice import ContainerServiceClient
 from azure.mgmt.resource.subscriptions import SubscriptionClient
 from azure.mgmt.web import WebSiteManagementClient
-
-GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-GRAPH_SCOPE = "https://graph.microsoft.com/.default"
-
-# Entra fields are tenant-global (counted once per run), so they are kept out of
-# the per-subscription REGIONAL_FIELDS/COLUMNS machinery and rendered separately.
-ENTRA_FIELDS = ("entra_users", "entra_roles")
 
 
 def rg_from_id(resource_id: str) -> str:
@@ -269,63 +259,6 @@ def list_subscriptions(credential, tenant_id=None) -> List[Dict[str, str]]:
     return subs
 
 
-def count_entra(credential, tenant_id=None) -> Dict[str, int]:
-    """Count Entra ID (Azure AD) users and activated directory roles.
-
-    Calls Microsoft Graph directly with a token minted from ``credential`` -- no
-    SDK dependency. Users are counted via the ``$count`` endpoint (which needs the
-    ConsistencyLevel: eventual header); directory roles are paged. Requires Graph
-    application permissions User.Read.All + Directory.Read.All.
-
-    Args:
-        credential: An azure-identity credential.
-        tenant_id: Unused directly (the credential already targets a tenant); kept
-            for signature symmetry with the subscription counters.
-
-    Returns:
-        dict: ``{"entra_users": <int>, "entra_roles": <int>}``. A field is -1 when
-        its Graph call is unavailable (e.g. missing permissions); both are -1 when
-        a Graph token can't be acquired at all.
-    """
-    try:
-        token = credential.get_token(GRAPH_SCOPE).token
-    except ClientAuthenticationError as e:
-        print(f"WARNING: could not acquire a Microsoft Graph token for Entra ID "
-              f"counting: {e}; reporting -1. Use --skip-entra to omit.", file=sys.stderr)
-        return {"entra_users": -1, "entra_roles": -1}
-
-    def graph_get(path, headers=None):
-        req = urllib.request.Request(f"{GRAPH_BASE}{path}")
-        req.add_header("Authorization", f"Bearer {token}")
-        for k, v in (headers or {}).items():
-            req.add_header(k, v)
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-
-    try:
-        # $count returns a bare integer body; ConsistencyLevel: eventual is required.
-        req = urllib.request.Request(f"{GRAPH_BASE}/users/$count")
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("ConsistencyLevel", "eventual")
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            users = int(resp.read().decode("utf-8").strip())
-    except (urllib.error.URLError, ValueError):
-        users = -1
-
-    try:
-        roles = 0
-        path = "/directoryRoles"
-        while path:
-            data = graph_get(path)
-            roles += len(data.get("value", []))
-            nxt = data.get("@odata.nextLink")
-            path = nxt[len(GRAPH_BASE):] if nxt and nxt.startswith(GRAPH_BASE) else None
-    except urllib.error.URLError:
-        roles = -1
-
-    return {"entra_users": users, "entra_roles": roles}
-
-
 def count_for_subscription(credential, subscription_id, subscription_name, locations=None):
     """Collect all compute counts for a single subscription.
 
@@ -364,17 +297,16 @@ def main():
     Targets are either a single subscription (``--mode subscription``) or every
     enabled subscription the credential can see (``--mode tenant``). Compute counts
     render as JSON or a fixed-width table/CSV with one row per subscription and a
-    TOTALS footer; Entra ID counts (tenant-global) render once, separately.
+    TOTALS footer.
     """
     parser = argparse.ArgumentParser(
-        description="Count Azure compute resources (and Entra ID identities) for sizing.",
+        description="Count Azure compute resources for sizing.",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=["subscription", "tenant"], required=True)
     parser.add_argument("--subscription-id")
     parser.add_argument("--tenant-id")
     parser.add_argument("--locations", nargs="*")
     parser.add_argument("--output", choices=["table", "json", "csv"], default="table")
-    parser.add_argument("--skip-entra", action="store_true")
     parser.add_argument(
         "--write-file", nargs="?", const="", default=None, metavar="PATH",
         help="Write the output to a file instead of stdout (only for --output json/csv; "
@@ -407,10 +339,6 @@ def main():
 
     totals = {k: sum(r.get(k, 0) for r in results) for k in REGIONAL_FIELDS}
 
-    entra = None
-    if not args.skip_entra:
-        entra = count_entra(credential, args.tenant_id)
-
     def resolve_outfile(ext):
         """Return the path to write to, or None to print to stdout.
 
@@ -425,10 +353,7 @@ def main():
         return f"uptycs_sizing_azure_{scope}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
 
     if args.output == "json":
-        payload_obj = {"results": results, "totals": totals}
-        if entra is not None:
-            payload_obj["entra"] = entra
-        payload = json.dumps(payload_obj, indent=2)
+        payload = json.dumps({"results": results, "totals": totals}, indent=2)
         path = resolve_outfile("json")
         if path:
             with open(path, "w") as f:
@@ -451,10 +376,6 @@ def main():
             for r in results:
                 writer.writerow([r[key] for _, key, _ in COLUMNS])
             writer.writerow(["TOTALS", ""] + [totals[key] for _, key, _ in data_cols])
-            if entra is not None:
-                writer.writerow([])
-                writer.writerow(["Entra ID (tenant-level)", "Entra Users", "Entra Roles"])
-                writer.writerow(["", entra["entra_users"], entra["entra_roles"]])
         finally:
             if path:
                 f.close()
@@ -476,13 +397,6 @@ def main():
 
     print("\nTOTALS:")
     print(fmt(["Subscriptions", ""] + [totals[key] for _, key, _ in data_cols]))
-
-    if entra is not None:
-        print("\nENTRA ID (tenant-level):")
-        print(f"  Users: {entra['entra_users']}    Roles: {entra['entra_roles']}")
-        if entra["entra_users"] == -1 or entra["entra_roles"] == -1:
-            print("  (-1 = Graph call unavailable; the credential likely lacks "
-                  "User.Read.All / Directory.Read.All. Use --skip-entra to omit.)", file=sys.stderr)
 
 
 if __name__ == "__main__":
