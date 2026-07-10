@@ -1,0 +1,489 @@
+#!/usr/bin/env python3
+
+"""
+Please refer README.md for more information on how to use the script
+
+Version: 1.0
+"""
+
+import argparse
+import concurrent.futures
+import csv
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from typing import Dict, List, Tuple
+
+from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.appcontainers import ContainerAppsAPIClient
+from azure.mgmt.compute import ComputeManagementClient
+from azure.mgmt.containerinstance import ContainerInstanceManagementClient
+from azure.mgmt.containerservice import ContainerServiceClient
+from azure.mgmt.resource.subscriptions import SubscriptionClient
+from azure.mgmt.web import WebSiteManagementClient
+
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+GRAPH_SCOPE = "https://graph.microsoft.com/.default"
+
+# Entra fields are tenant-global (counted once per run), so they are kept out of
+# the per-subscription REGIONAL_FIELDS/COLUMNS machinery and rendered separately.
+ENTRA_FIELDS = ("entra_users", "entra_roles")
+
+
+def rg_from_id(resource_id: str) -> str:
+    """Extract the resource group name from an ARM resource id.
+
+    ARM ids look like ``/subscriptions/<sub>/resourceGroups/<rg>/providers/...``.
+    Some ops (e.g. listing VMSS instances) need the resource group but only the
+    full id is available on the parent object.
+
+    Args:
+        resource_id: Full ARM resource id.
+
+    Returns:
+        str: The resource group name, or "" if it can't be parsed.
+    """
+    parts = resource_id.split("/")
+    for i, p in enumerate(parts):
+        if p.lower() == "resourcegroups" and i + 1 < len(parts):
+            return parts[i + 1]
+    return ""
+
+
+def count_vms(credential, subscription_id: str, locations=None) -> Dict[str, int]:
+    """Count standalone Virtual Machines in a subscription.
+
+    Uses the subscription-wide ``virtual_machines.list_all()`` (ARM list APIs are
+    not region-scoped). VMs that belong to a Flexible-orchestration scale set are
+    excluded here and counted under VMSS instead (``virtual_machine_scale_set`` is
+    set on such VMs); Uniform scale-set instances never appear in this listing.
+
+    Args:
+        credential: An azure-identity credential.
+        subscription_id: Target subscription id.
+        locations: Optional set of location names to restrict the count to.
+
+    Returns:
+        dict: ``{"vms": <int>}``.
+    """
+    client = ComputeManagementClient(credential, subscription_id)
+    count = 0
+    for vm in client.virtual_machines.list_all():
+        if getattr(vm, "virtual_machine_scale_set", None) is not None:
+            continue
+        if locations and (vm.location or "").lower() not in locations:
+            continue
+        count += 1
+    return {"vms": count}
+
+
+def count_vmss(credential, subscription_id: str, locations=None) -> Dict[str, int]:
+    """Count VM Scale Sets and their live instances in a subscription.
+
+    ``vmss_instances`` counts the instances that actually exist
+    (``virtual_machine_scale_set_vms.list``) rather than the configured
+    ``sku.capacity``, which is a desired value that can lag reality.
+
+    Args:
+        credential: An azure-identity credential.
+        subscription_id: Target subscription id.
+        locations: Optional set of location names to restrict the count to.
+
+    Returns:
+        dict: ``{"vmss": <int>, "vmss_instances": <int>}``.
+    """
+    client = ComputeManagementClient(credential, subscription_id)
+    sets = instances = 0
+    for ss in client.virtual_machine_scale_sets.list_all():
+        if locations and (ss.location or "").lower() not in locations:
+            continue
+        sets += 1
+        rg = rg_from_id(ss.id)
+        if rg:
+            instances += sum(1 for _ in client.virtual_machine_scale_set_vms.list(rg, ss.name))
+    return {"vmss": sets, "vmss_instances": instances}
+
+
+def count_aks(credential, subscription_id: str, locations=None) -> Dict[str, int]:
+    """Count AKS clusters, agent pools (node pools), and nodes in a subscription.
+
+    Node count is the sum of each cluster's agent-pool ``count``. See the module
+    docstring for the autoscaler / virtual-node / Node-Autoprovisioning blind
+    spots that make this a last-known rather than live value.
+
+    Args:
+        credential: An azure-identity credential.
+        subscription_id: Target subscription id.
+        locations: Optional set of location names to restrict the count to.
+
+    Returns:
+        dict: ``{"aks_clusters": <int>, "aks_nodepools": <int>, "aks_nodes": <int>}``.
+    """
+    client = ContainerServiceClient(credential, subscription_id)
+    clusters = nodepools = nodes = 0
+    for c in client.managed_clusters.list():
+        if locations and (c.location or "").lower() not in locations:
+            continue
+        clusters += 1
+        for pool in (c.agent_pool_profiles or []):
+            nodepools += 1
+            nodes += pool.count or 0
+    return {"aks_clusters": clusters, "aks_nodepools": nodepools, "aks_nodes": nodes}
+
+
+def count_aci(credential, subscription_id: str, locations=None) -> Dict[str, int]:
+    """Count Azure Container Instances (container groups and containers).
+
+    Args:
+        credential: An azure-identity credential.
+        subscription_id: Target subscription id.
+        locations: Optional set of location names to restrict the count to.
+
+    Returns:
+        dict: ``{"aci_groups": <int>, "aci_containers": <int>}``.
+    """
+    client = ContainerInstanceManagementClient(credential, subscription_id)
+    groups = containers = 0
+    for g in client.container_groups.list():
+        if locations and (g.location or "").lower() not in locations:
+            continue
+        groups += 1
+        containers += len(g.containers or [])
+    return {"aci_groups": groups, "aci_containers": containers}
+
+
+def count_appservice(credential, subscription_id: str, locations=None) -> Dict[str, int]:
+    """Count Azure Functions vs App Service web apps in a subscription.
+
+    ``web_apps.list()`` returns function apps, web apps, and other site kinds
+    together; they are split on the ``kind`` field (function apps contain
+    "functionapp"). Consumption-plan function apps are serverless (no worker
+    count), a blind spot analogous to AWS Lambda.
+
+    Args:
+        credential: An azure-identity credential.
+        subscription_id: Target subscription id.
+        locations: Optional set of location names to restrict the count to.
+
+    Returns:
+        dict: ``{"functions": <int>, "web_apps": <int>}``.
+    """
+    client = WebSiteManagementClient(credential, subscription_id)
+    functions = web_apps = 0
+    for site in client.web_apps.list():
+        if locations and (site.location or "").replace(" ", "").lower() not in locations:
+            continue
+        if "functionapp" in (site.kind or ""):
+            functions += 1
+        else:
+            web_apps += 1
+    return {"functions": functions, "web_apps": web_apps}
+
+
+def count_container_apps(credential, subscription_id: str, locations=None) -> Dict[str, int]:
+    """Count Azure Container Apps and their managed environments in a subscription.
+
+    Replica counts are KEDA-driven and dynamic, so only app and environment
+    counts are reported.
+
+    Args:
+        credential: An azure-identity credential.
+        subscription_id: Target subscription id.
+        locations: Optional set of location names to restrict the count to.
+
+    Returns:
+        dict: ``{"container_apps": <int>, "container_app_envs": <int>}``.
+    """
+    client = ContainerAppsAPIClient(credential, subscription_id)
+    apps = envs = 0
+    for app in client.container_apps.list_by_subscription():
+        if locations and (app.location or "").replace(" ", "").lower() not in locations:
+            continue
+        apps += 1
+    for env in client.managed_environments.list_by_subscription():
+        if locations and (env.location or "").replace(" ", "").lower() not in locations:
+            continue
+        envs += 1
+    return {"container_apps": apps, "container_app_envs": envs}
+
+
+# Modular counter registry. Each entry pairs a counter function with the fields
+# it produces. subscription_worker() runs every counter and, if one raises, zero-
+# fills ONLY that counter's fields -- so a single failing service can't blank out
+# the rest of the row. To add a resource type: write a count_* fn, add it here,
+# and add its columns to COLUMNS below. Those two lists are the only places that
+# need to know about a new resource.
+COUNTERS: List[Tuple] = [
+    (count_vms, ("vms",)),
+    (count_vmss, ("vmss", "vmss_instances")),
+    (count_aks, ("aks_clusters", "aks_nodepools", "aks_nodes")),
+    (count_aci, ("aci_groups", "aci_containers")),
+    (count_appservice, ("functions", "web_apps")),
+    (count_container_apps, ("container_apps", "container_app_envs")),
+]
+
+# All per-subscription numeric fields, derived from the registry so it can never
+# drift from COUNTERS.
+REGIONAL_FIELDS = tuple(f for _, fields in COUNTERS for f in fields)
+
+# Each column is (header label, result-dict key, table column width). This one
+# list drives the CSV header/rows and the fixed-width table alike, so the column
+# set and ordering can't drift between the two renderings.
+COLUMNS = [
+    ("Subscription ID", "subscription_id", 38), ("Name", "subscription_name", 24),
+    ("VMs", "vms", 6), ("VMSS", "vmss", 6), ("VMSS-Instances", "vmss_instances", 15),
+    ("AKS-Clusters", "aks_clusters", 13), ("AKS-NodePools", "aks_nodepools", 14),
+    ("AKS-Nodes", "aks_nodes", 10), ("ACI-Groups", "aci_groups", 11),
+    ("ACI-Containers", "aci_containers", 15), ("Functions", "functions", 10),
+    ("Web-Apps", "web_apps", 9), ("Container-Apps", "container_apps", 15),
+    ("ContainerApp-Envs", "container_app_envs", 18),
+]
+
+
+def list_subscriptions(credential, tenant_id=None) -> List[Dict[str, str]]:
+    """List all ENABLED subscriptions the credential can access.
+
+    Disabled/warned/deleted subscriptions are skipped so per-subscription API
+    calls don't fail. When ``tenant_id`` is given, results are limited to that
+    tenant.
+
+    Args:
+        credential: An azure-identity credential.
+        tenant_id: Optional tenant id to filter subscriptions by.
+
+    Returns:
+        list[dict]: One ``{"id": ..., "name": ...}`` per enabled subscription.
+    """
+    client = SubscriptionClient(credential)
+    subs = []
+    for s in client.subscriptions.list():
+        if s.state and str(s.state) not in ("Enabled", "SubscriptionState.ENABLED"):
+            continue
+        if tenant_id and s.tenant_id and s.tenant_id != tenant_id:
+            continue
+        subs.append({"id": s.subscription_id, "name": s.display_name or ""})
+    return subs
+
+
+def count_entra(credential, tenant_id=None) -> Dict[str, int]:
+    """Count Entra ID (Azure AD) users and activated directory roles.
+
+    Calls Microsoft Graph directly with a token minted from ``credential`` -- no
+    SDK dependency. Users are counted via the ``$count`` endpoint (which needs the
+    ConsistencyLevel: eventual header); directory roles are paged. Requires Graph
+    application permissions User.Read.All + Directory.Read.All.
+
+    Args:
+        credential: An azure-identity credential.
+        tenant_id: Unused directly (the credential already targets a tenant); kept
+            for signature symmetry with the subscription counters.
+
+    Returns:
+        dict: ``{"entra_users": <int>, "entra_roles": <int>}``. A field is -1 when
+        its Graph call is unavailable (e.g. missing permissions); both are -1 when
+        a Graph token can't be acquired at all.
+    """
+    try:
+        token = credential.get_token(GRAPH_SCOPE).token
+    except ClientAuthenticationError as e:
+        print(f"WARNING: could not acquire a Microsoft Graph token for Entra ID "
+              f"counting: {e}; reporting -1. Use --skip-entra to omit.", file=sys.stderr)
+        return {"entra_users": -1, "entra_roles": -1}
+
+    def graph_get(path, headers=None):
+        req = urllib.request.Request(f"{GRAPH_BASE}{path}")
+        req.add_header("Authorization", f"Bearer {token}")
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    try:
+        # $count returns a bare integer body; ConsistencyLevel: eventual is required.
+        req = urllib.request.Request(f"{GRAPH_BASE}/users/$count")
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("ConsistencyLevel", "eventual")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            users = int(resp.read().decode("utf-8").strip())
+    except (urllib.error.URLError, ValueError):
+        users = -1
+
+    try:
+        roles = 0
+        path = "/directoryRoles"
+        while path:
+            data = graph_get(path)
+            roles += len(data.get("value", []))
+            nxt = data.get("@odata.nextLink")
+            path = nxt[len(GRAPH_BASE):] if nxt and nxt.startswith(GRAPH_BASE) else None
+    except urllib.error.URLError:
+        roles = -1
+
+    return {"entra_users": users, "entra_roles": roles}
+
+
+def count_for_subscription(credential, subscription_id, subscription_name, locations=None):
+    """Collect all compute counts for a single subscription.
+
+    Runs every counter in COUNTERS. Error behavior mirrors the AWS script's
+    per-service tolerance: if a counter raises ``HttpResponseError`` its fields
+    contribute 0 and the rest of the row still renders. A total auth failure for
+    the subscription is not special-cased here -- individual counters will each
+    fail and zero-fill, and the subscription still appears in the output.
+
+    Args:
+        credential: An azure-identity credential.
+        subscription_id: Target subscription id.
+        subscription_name: Display name (may be empty).
+        locations: Optional set of lowercased location names to restrict counts to.
+
+    Returns:
+        dict: All REGIONAL_FIELDS plus ``subscription_id``/``subscription_name``.
+    """
+    result = {k: 0 for k in REGIONAL_FIELDS}
+    for fn, fields in COUNTERS:
+        try:
+            result.update(fn(credential, subscription_id, locations))
+        except HttpResponseError as e:
+            print(f"WARNING: subscription {subscription_id} {subscription_name}".rstrip()
+                  + f": {fn.__name__} failed: {e.message if hasattr(e, 'message') else e}; reporting zeros",
+                  file=sys.stderr)
+            for f in fields:
+                result[f] = 0
+    result.update({"subscription_id": subscription_id, "subscription_name": subscription_name})
+    return result
+
+
+def main():
+    """CLI entry point: parse args, resolve subscriptions, count, and render.
+
+    Targets are either a single subscription (``--mode subscription``) or every
+    enabled subscription the credential can see (``--mode tenant``). Compute counts
+    render as JSON or a fixed-width table/CSV with one row per subscription and a
+    TOTALS footer; Entra ID counts (tenant-global) render once, separately.
+    """
+    parser = argparse.ArgumentParser(
+        description="Count Azure compute resources (and Entra ID identities) for sizing.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--mode", choices=["subscription", "tenant"], required=True)
+    parser.add_argument("--subscription-id")
+    parser.add_argument("--tenant-id")
+    parser.add_argument("--locations", nargs="*")
+    parser.add_argument("--output", choices=["table", "json", "csv"], default="table")
+    parser.add_argument("--skip-entra", action="store_true")
+    parser.add_argument(
+        "--write-file", nargs="?", const="", default=None, metavar="PATH",
+        help="Write the output to a file instead of stdout (only for --output json/csv; "
+             "ignored for table). Give a path, or pass the flag with no value to use an "
+             "auto-generated name. Omit the flag entirely to print to stdout (default).",
+    )
+
+    args = parser.parse_args()
+    if args.mode == "subscription" and not args.subscription_id:
+        parser.error("--mode subscription requires --subscription-id")
+
+    credential = DefaultAzureCredential()
+
+    if args.mode == "subscription":
+        targets = [(args.subscription_id, "")]
+    else:
+        targets = [(s["id"], s["name"]) for s in list_subscriptions(credential, args.tenant_id)]
+        if not targets:
+            print("No enabled subscriptions found for this credential.", file=sys.stderr)
+            sys.exit(1)
+
+    locations = {loc.replace(" ", "").lower() for loc in args.locations} if args.locations else None
+
+    def worker(target):
+        sid, name = target
+        return count_for_subscription(credential, sid, name, locations)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(targets))) as exe:
+        results = list(exe.map(worker, targets))
+
+    totals = {k: sum(r.get(k, 0) for r in results) for k in REGIONAL_FIELDS}
+
+    entra = None
+    if not args.skip_entra:
+        entra = count_entra(credential, args.tenant_id)
+
+    def resolve_outfile(ext):
+        """Return the path to write to, or None to print to stdout.
+
+        ``--write-file`` absent -> None (stdout). Passed with a path -> that path.
+        Passed bare -> an auto-generated name scoped to the run.
+        """
+        if args.write_file is None:
+            return None
+        if args.write_file:
+            return args.write_file
+        scope = args.subscription_id if args.mode == "subscription" else "tenant"
+        return f"uptycs_sizing_azure_{scope}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
+
+    if args.output == "json":
+        payload_obj = {"results": results, "totals": totals}
+        if entra is not None:
+            payload_obj["entra"] = entra
+        payload = json.dumps(payload_obj, indent=2)
+        path = resolve_outfile("json")
+        if path:
+            with open(path, "w") as f:
+                f.write(payload + "\n")
+            print(f"Wrote JSON output to {path}", file=sys.stderr)
+        else:
+            print(payload)
+        return
+
+    data_cols = COLUMNS[2:]  # everything past the two identity columns
+
+    if args.output == "csv":
+        path = resolve_outfile("csv")
+        # newline="" is required by the csv module to avoid blank rows when writing
+        # to a file; stdout keeps its default handling.
+        f = open(path, "w", newline="") if path else sys.stdout
+        try:
+            writer = csv.writer(f)
+            writer.writerow([label for label, _, _ in COLUMNS])
+            for r in results:
+                writer.writerow([r[key] for _, key, _ in COLUMNS])
+            writer.writerow(["TOTALS", ""] + [totals[key] for _, key, _ in data_cols])
+            if entra is not None:
+                writer.writerow([])
+                writer.writerow(["Entra ID (tenant-level)", "Entra Users", "Entra Roles"])
+                writer.writerow(["", entra["entra_users"], entra["entra_roles"]])
+        finally:
+            if path:
+                f.close()
+        if path:
+            print(f"Wrote CSV output to {path}", file=sys.stderr)
+        return
+
+    if args.write_file is not None:
+        print("WARNING: --write-file is only supported for --output json/csv; "
+              "printing table to stdout", file=sys.stderr)
+
+    widths = [w for _, _, w in COLUMNS]
+    def fmt(cols): return " ".join(str(c)[:w].ljust(w) for c, w in zip(cols, widths))
+    print(fmt([label for label, _, _ in COLUMNS]))
+    print("-" * (sum(widths) + len(widths)))
+
+    for r in results:
+        print(fmt([r[key] for _, key, _ in COLUMNS]))
+
+    print("\nTOTALS:")
+    print(fmt(["Subscriptions", ""] + [totals[key] for _, key, _ in data_cols]))
+
+    if entra is not None:
+        print("\nENTRA ID (tenant-level):")
+        print(f"  Users: {entra['entra_users']}    Roles: {entra['entra_roles']}")
+        if entra["entra_users"] == -1 or entra["entra_roles"] == -1:
+            print("  (-1 = Graph call unavailable; the credential likely lacks "
+                  "User.Read.All / Directory.Read.All. Use --skip-entra to omit.)", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

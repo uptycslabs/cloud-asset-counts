@@ -26,19 +26,21 @@ Note <cross_account_role_name> is not the full ARN, it is just the last (name) p
 
 ## Requirements
 
-- Python3
-- `python3 -m pip install requirements.txt`
+- Python3 (3.8+)
+- `python3 -m pip install -r requirements.txt`
+- **Reader** role on each target subscription; for Entra ID counts, Microsoft Graph `User.Read.All` + `Directory.Read.All`
+- Azure login: `az login`, or a service principal via `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`
 
 ## Execution
 
-- Login: `az login`
-- Run: `python3 uptycs_azure_counts.py`
+`python3 uptycs_sizing_azure.py --mode {subscription,tenant} [--subscription-id <id>]`
+See [Azure/README.md](Azure/README.md) for more options and examples.
 
 ## Output
 
-- Output is written to a file named: `uptycs_azure_counts_<tenant_id>_<date>.csv`
-- Output coluns are: `subscription, region, vm_count, aks_node_count`
-- The final row in the CSV output contains the TOTALS
+- Prints a table (default), CSV, or JSON (`--output`); use `--write-file` to write CSV/JSON to a file
+- Counts Virtual Machines, VM Scale Sets (& instances), AKS (clusters, node pools & nodes), Azure Container Instances (groups & containers), App Service (Functions & Web Apps), Container Apps (& environments), and Entra ID users/roles
+- The final row in the output contains the TOTALS
 
 # GCP
 

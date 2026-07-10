@@ -1,4 +1,7 @@
-azure-identity 
-azure-mgmt-subscription 
-azure-mgmt-compute 
+azure-identity
+azure-mgmt-resource-subscriptions
+azure-mgmt-compute
 azure-mgmt-containerservice
+azure-mgmt-containerinstance
+azure-mgmt-web
+azure-mgmt-appcontainers
