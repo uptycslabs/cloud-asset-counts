@@ -42,13 +42,13 @@ These mirror the accuracy caveats in the AWS tool — counts come from the Azure
 - 🧾 **Multiple output formats**: table (pretty), CSV, JSON — printed to stdout or written to a file.
 - 🛟 **Resilient**: a per-service failure contributes `0` and the rest of the row still renders.
 
-> **Note on the table view:** the column widths are intentionally fixed in the code to keep alignment consistent in a plain console. It is wide (14 columns), so raw output wraps in a narrow terminal.
+> **Note on the table view:** the column widths are intentionally fixed in the code to keep alignment consistent in a plain console.
 
 ---
 
 ## Requirements
 
-- Python **3.8+**
+- Python **3.10+**
 - Packages (pinned in [`requirements.txt`](requirements.txt)):
 
 ```text
@@ -61,12 +61,9 @@ azure-mgmt-web
 azure-mgmt-appcontainers
 ```
 
-Modern Python (PEP 668) blocks installing into the system interpreter, so use a virtualenv:
+Install them with:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate            # Windows PowerShell: .venv\Scripts\Activate.ps1
-pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -131,12 +128,25 @@ python3 uptycs_sizing_azure.py --mode subscription \
   --locations eastus westus2 --output csv --write-file
 ```
 
-#### Running with `uv` (no venv needed)
+#### More examples — running with `uv` (no venv needed)
 
-[`uv`](https://docs.astral.sh/uv/) can run the script in one shot with dependencies resolved,
-without creating or activating a virtual environment:
+[`uv`](https://docs.astral.sh/uv/) can run the script in one shot with dependencies resolved, without creating or activating a virtual environment.
+
+**Requirements:**
+
+- `uv` installed. If you don't have it:
+  ```bash
+  # macOS / Linux
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+
+  # or via pip
+  pip install uv
+  ```
+- `uv` provides Python automatically, so no separate Python install is required.
+- Valid Azure credentials in your environment (`az login` or a service principal), same as any other run.
 
 ```bash
+# Run in one shot with dependencies resolved, without activating a venv
 uv run --with-requirements requirements.txt python3 uptycs_sizing_azure.py \
   --mode subscription --subscription-id 00000000-0000-0000-0000-000000000000 --output json
 ```
@@ -166,16 +176,13 @@ The same set of columns drives the table and CSV, so they always match:
 
 ### Table (default)
 
-A fixed-width table is printed to stdout with a `TOTALS` line:
+A fixed-width table is printed to stdout, with a `TOTALS` line at the end. It is wide (14 columns), so the raw console output wraps in a narrow terminal. The same data is shown below as a table for readability:
 
-```text
-Subscription ID       Name          VMs  VMSS  VMSS-Instances  AKS-Clusters  ...
---------------------------------------------------------------------------------
-8da31d20-...          Sponsors      5    5     6               3             ...
-
-TOTALS:
-Subscriptions                       5    5     6               3             ...
-```
+| Subscription ID | Name | VMs | VMSS | VMSS-Instances | AKS-Clusters | AKS-NodePools | AKS-Nodes | ACI-Groups | ACI-Containers | Functions | Web-Apps | Container-Apps | ContainerApp-Envs |
+| --------------- | ------- | --- | ---- | -------------- | ------------ | ------------- | --------- | ---------- | -------------- | --------- | -------- | -------------- | ----------------- |
+| 8da31d20-...    | prod    | 5   | 5    | 6              | 3            | 5             | 6         | 10         | 19             | 4         | 2        | 1              | 1                 |
+| 77ec1fed-...    | sandbox | 1   | 0    | 0              | 0            | 0             | 0         | 0          | 0              | 2         | 1        | 0              | 0                 |
+| **TOTALS**      |         | 6   | 5    | 6              | 3            | 5             | 6         | 10         | 19             | 6         | 3        | 1              | 1                 |
 
 ### CSV
 
@@ -232,6 +239,8 @@ Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is 
 ## Performance & Limits
 
 - **Concurrency**: up to 16 parallel per-subscription workers.
+- **Throttling**: the Azure SDK retries transient failures automatically via the default
+  `azure-core` retry policy (10 attempts, exponential backoff, honoring `Retry-After` on 429s).
 - **Resilience**: a counter that fails (e.g. a service not registered in a subscription)
   contributes `0` for its fields; the rest of the row still renders.
 - **AKS/serverless blind spots**: see "Known blind spots" above.
@@ -265,7 +274,6 @@ Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is 
 ## Quick Start
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 az login
 
