@@ -18,8 +18,8 @@ The script discovers enabled regions automatically (or you can pass your own lis
 
 A single machine can serve more than one purpose, so the script takes care not to double-count it:
 
-- A machine registered as an **ECS container host** is reported under `ECS-Container-Hosts` and removed from the `EC2` count.
-- A machine acting as an **EKS worker node** is reported under `EKS-Nodes` and removed from the `EC2` count.
+- A machine registered as an **ECS container instance** is reported under `ECS-Container-Instances` and removed from the `EC2-Standalone` count.
+- A machine acting as an **EKS worker node** is reported under `EKS-Nodes` and removed from the `EC2-Standalone` count.
 - Machines that are **not** EC2 instances — on-premises ECS Anywhere hosts, or the nodes EKS Auto Mode runs for you — are counted **in addition** to your EC2 total, since they are genuinely separate machines. ECS Anywhere hosts that turn out to be EC2 instances are matched back by IP and counted only once.
 
 ---
@@ -82,11 +82,11 @@ Run with either:
 - Permissions to list/describe the counted services, e.g.:
   - `ec2:DescribeInstances`, `ec2:DescribeRegions`
   - `lambda:ListFunctions`
-  - `ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `ecs:ListTasks`, `ecs:DescribeTasks`, `ecs:ListContainerInstances`, `ecs:DescribeContainerInstances`
+  - `ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `ecs:ListTasks`, `ecs:DescribeTasks`, `ecs:ListContainerInstances`, `ecs:DescribeContainerInstances`, `ecs:DescribeCapacityProviders`
   - `ssm:DescribeInstanceInformation` (to reconcile ECS Anywhere hosts with EC2)
   - `eks:ListClusters`, `eks:ListNodegroups`
   - `s3:ListAllMyBuckets`
-  - `iam:ListUsers`, `iam:ListRoles`
+  - `iam:ListUsers`, `iam:ListRoles`, `iam:ListAccountAliases` (account name in account mode)
 
 > Tip: AWS-managed **ReadOnlyAccess** is typically sufficient.
 > If you use an **ExternalId**, pass it with `--external-id`.
@@ -194,35 +194,35 @@ uv run --with "boto3>=1.42.94" python3 uptycs_sizing_aws.py --mode account \
 
 The same set of columns drives the table and CSV, so they always match:
 
-| Column              | Key                   | Meaning                                                |
-| ------------------- | --------------------- | ------------------------------------------------------ |
-| Account ID          | `account_id`          | Target account                                         |
-| Name                | `account_name`        | Account name (org mode)                                |
-| EC2                 | `ec2`                 | EC2 instances, excluding container hosts and EKS nodes |
-| ECS-Container-Hosts | `ecs_container_hosts` | Machines registered to run ECS tasks                   |
-| ECS-Tasks-Fargate   | `ecs_tasks_fargate`   | Running Fargate tasks                                  |
-| Lambda              | `lambda`              | Lambda functions                                       |
-| EKS-Clusters        | `eks_clusters`        | EKS clusters                                           |
-| EKS-NodeGroups      | `eks_nodegroups`      | EKS node groups                                        |
-| EKS-Nodes           | `eks_nodes`           | EKS worker nodes (incl. Auto Mode)                     |
-| ECS-Clusters        | `ecs_clusters`        | ECS clusters                                           |
-| ECS-Services        | `ecs_services`        | ECS services                                           |
-| ECS-EC2             | `ecs_ec2`             | ECS services running on EC2                            |
-| ECS-Fargate         | `ecs_fargate`         | ECS services running on Fargate                        |
-| ECS-Tasks-EC2       | `ecs_tasks_ec2`       | Running EC2-backed tasks                               |
-| S3-Buckets          | `s3_buckets`          | S3 buckets                                             |
-| IAM Users           | `iam_users`           | IAM users                                              |
-| IAM Roles           | `iam_roles`           | IAM roles                                              |
+| Column                  | Key                       | Meaning                                                   |
+| ----------------------- | ------------------------- | -------------------------------------------------------- |
+| Account ID              | `account_id`              | Target account                                           |
+| Name                    | `account_name`            | Account name (org mode)                                  |
+| EC2-Standalone          | `ec2_standalone`          | EC2 instances, excluding container instances and EKS nodes |
+| ECS-Clusters            | `ecs_clusters`            | ECS clusters                                             |
+| ECS-Services-Total      | `ecs_services_total`      | ECS services (EC2 + Fargate)                             |
+| ECS-Services-EC2        | `ecs_services_ec2`        | ECS services running on EC2                              |
+| ECS-Services-Fargate    | `ecs_services_fargate`    | ECS services running on Fargate                          |
+| ECS-Tasks-EC2           | `ecs_tasks_ec2`           | Running EC2-backed tasks                                 |
+| ECS-Tasks-Fargate       | `ecs_tasks_fargate`       | Running Fargate tasks                                    |
+| ECS-Container-Instances | `ecs_container_instances` | EC2 instances registered to run ECS tasks               |
+| EKS-Clusters            | `eks_clusters`            | EKS clusters                                             |
+| EKS-NodeGroups          | `eks_nodegroups`          | EKS node groups                                          |
+| EKS-Nodes               | `eks_nodes`               | EKS worker nodes (incl. Auto Mode)                       |
+| Lambda-Functions        | `lambda_functions`        | Lambda functions                                         |
+| S3-Buckets              | `s3_buckets`              | S3 buckets                                               |
+| IAM-Users               | `iam_users`               | IAM users                                                |
+| IAM-Roles               | `iam_roles`               | IAM roles                                                |
 
 ### Table (default)
 
 A fixed-width table is printed to stdout, with a `TOTALS` line at the end. It is wide (17 columns), so the raw console output wraps in a narrow terminal. The same data is shown below as a table for readability:
 
-| Account ID   | Name       | EC2 | ECS-Container-Hosts | ECS-Tasks-Fargate | Lambda | EKS-Clusters | EKS-NodeGroups | EKS-Nodes | ECS-Clusters | ECS-Services | ECS-EC2 | ECS-Fargate | ECS-Tasks-EC2 | S3-Buckets | IAM Users | IAM Roles |
-| ------------ | ---------- | --- | ------------------- | ----------------- | ------ | ------------ | -------------- | --------- | ------------ | ------------ | ------- | ----------- | ------------- | ---------- | --------- | --------- |
-| 111122223333 | prod-infra | 87  | 6                   | 14                | 145    | 2            | 4              | 12        | 5            | 38           | 30      | 8           | 60            | 12         | 20        | 72        |
-| 222233334444 | sandbox    | 3   | 0                   | 0                 | 12     | 0            | 0              | 0         | 1            | 3            | 3       | 0           | 5             | 4          | 2         | 10        |
-| **TOTALS**   |            | 90  | 6                   | 14                | 157    | 2            | 4              | 12        | 6            | 41           | 33      | 8           | 65            | 16         | 22        | 82        |
+| Account ID   | Name       | EC2-Standalone | ECS-Clusters | ECS-Services-Total | ECS-Services-EC2 | ECS-Services-Fargate | ECS-Tasks-EC2 | ECS-Tasks-Fargate | ECS-Container-Instances | EKS-Clusters | EKS-NodeGroups | EKS-Nodes | Lambda-Functions | S3-Buckets | IAM-Users | IAM-Roles |
+| ------------ | ---------- | -------------- | ------------ | ------------------ | ---------------- | -------------------- | ------------- | ----------------- | ----------------------- | ------------ | -------------- | --------- | ---------------- | ---------- | --------- | --------- |
+| 111122223333 | prod-infra | 87             | 5            | 38                 | 30               | 8                    | 60            | 14                | 6                       | 2            | 4              | 12        | 145              | 12         | 20        | 72        |
+| 222233334444 | sandbox    | 3              | 1            | 3                  | 3                | 0                    | 5             | 0                 | 0                       | 0            | 0              | 0         | 12               | 4          | 2         | 10        |
+| **TOTALS**   |            | 90             | 6            | 41                 | 33               | 8                    | 65            | 14                | 6                       | 2            | 4              | 12        | 157              | 16         | 22        | 82        |
 
 > If an account can’t be assumed, the row shows zeros and an `error` note explaining why, so one account never hides the rest of the report.
 
@@ -238,38 +238,38 @@ Structure (`results` is one object per account; `totals` aggregates all counted 
 {
   "results": [
     {
-      "ec2": 87,
-      "lambda": 145,
+      "account_id": "111122223333",
+      "account_name": "prod-infra",
+      "ec2_standalone": 87,
       "ecs_clusters": 5,
-      "ecs_services": 38,
-      "ecs_ec2": 30,
-      "ecs_fargate": 8,
+      "ecs_services_total": 38,
+      "ecs_services_ec2": 30,
+      "ecs_services_fargate": 8,
       "ecs_tasks_ec2": 60,
       "ecs_tasks_fargate": 14,
-      "ecs_container_hosts": 6,
+      "ecs_container_instances": 6,
       "eks_clusters": 2,
       "eks_nodegroups": 4,
       "eks_nodes": 12,
+      "lambda_functions": 145,
       "s3_buckets": 12,
       "iam_users": 20,
-      "iam_roles": 72,
-      "account_id": "111122223333",
-      "account_name": "prod-infra"
+      "iam_roles": 72
     }
   ],
   "totals": {
-    "ec2": 87,
-    "lambda": 145,
+    "ec2_standalone": 87,
     "ecs_clusters": 5,
-    "ecs_services": 38,
-    "ecs_ec2": 30,
-    "ecs_fargate": 8,
+    "ecs_services_total": 38,
+    "ecs_services_ec2": 30,
+    "ecs_services_fargate": 8,
     "ecs_tasks_ec2": 60,
     "ecs_tasks_fargate": 14,
-    "ecs_container_hosts": 6,
+    "ecs_container_instances": 6,
     "eks_clusters": 2,
     "eks_nodegroups": 4,
     "eks_nodes": 12,
+    "lambda_functions": 145,
     "s3_buckets": 12,
     "iam_users": 20,
     "iam_roles": 72
@@ -300,7 +300,7 @@ Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is 
      - Lambda: `ListFunctions`
      - ECS: clusters, services, tasks, and container instances (reconciled against EC2/SSM)
      - EKS: clusters, node groups, and worker nodes (incl. Auto Mode)
-   - Container hosts and EKS nodes are subtracted from the EC2 count so no machine is counted twice.
+   - Container instances and EKS nodes are subtracted from the EC2-Standalone count so no machine is counted twice.
 
 4. **Aggregate totals** and print/output in the selected format.
 
