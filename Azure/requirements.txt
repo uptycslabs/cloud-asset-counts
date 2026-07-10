@@ -1,7 +1,9 @@
-azure-identity
-azure-mgmt-resource-subscriptions
-azure-mgmt-compute
-azure-mgmt-containerservice
-azure-mgmt-containerinstance
-azure-mgmt-web
-azure-mgmt-appcontainers
+# Pinned to the versions validated with uptycs_sizing_azure.py.
+# Bump deliberately after re-testing — unbounded installs can break on Azure SDK major releases.
+azure-identity==1.25.3
+azure-mgmt-resource-subscriptions==1.0.0b2
+azure-mgmt-compute==38.1.0
+azure-mgmt-containerservice==41.3.0
+azure-mgmt-containerinstance==10.1.0
+azure-mgmt-web==11.0.0
+azure-mgmt-appcontainers==5.0.0
