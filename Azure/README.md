@@ -25,8 +25,6 @@ never appear as standalone VMs; Flexible-orchestration members are filtered out 
 
 ### Known blind spots
 
-These mirror the accuracy caveats in the AWS tool — counts come from the Azure control plane, which cannot see everything:
-
 - **AKS** node counts come from each pool's `count` (or `max_count` isn't used — the last-known value is reported). Cluster-autoscaler churn, **virtual nodes** (ACI-backed), and **Node Autoprovisioning** nodes are not represented; exact live counts require the cluster's Kubernetes API.
 - **Functions** on a Consumption plan and **Container Apps** are serverless — their worker/replica counts are dynamic, so only the app/environment counts are reported.
 
@@ -77,6 +75,15 @@ Authenticate with **either**:
 - **Service principal** — export `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`.
 
 The script uses `DefaultAzureCredential`, which picks up either automatically.
+
+Fastest path from a clean checkout:
+
+```bash
+pip install -r requirements.txt
+az login
+python3 uptycs_sizing_azure.py --mode subscription \
+  --subscription-id 00000000-0000-0000-0000-000000000000 --output table
+```
 
 ### Azure permissions
 
@@ -135,6 +142,7 @@ python3 uptycs_sizing_azure.py --mode subscription \
 **Requirements:**
 
 - `uv` installed. If you don't have it:
+
   ```bash
   # macOS / Linux
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -142,6 +150,7 @@ python3 uptycs_sizing_azure.py --mode subscription \
   # or via pip
   pip install uv
   ```
+
 - `uv` provides Python automatically, so no separate Python install is required.
 - Valid Azure credentials in your environment (`az login` or a service principal), same as any other run.
 
@@ -157,28 +166,28 @@ uv run --with-requirements requirements.txt python3 uptycs_sizing_azure.py \
 
 The same set of columns drives the table and CSV, so they always match:
 
-| Column             | Key                  | Meaning                                            |
-| ------------------ | -------------------- | -------------------------------------------------- |
-| Subscription ID    | `subscription_id`    | Target subscription                                |
-| Name               | `subscription_name`  | Subscription display name (tenant mode)            |
-| VMs                | `vms`                | Standalone VMs (scale-set instances excluded)      |
-| VMSS               | `vmss`               | VM Scale Sets                                       |
-| VMSS-Instances     | `vmss_instances`     | Live scale-set instances                           |
-| AKS-Clusters       | `aks_clusters`       | AKS clusters                                        |
-| AKS-NodePools      | `aks_nodepools`      | AKS agent pools                                     |
-| AKS-Nodes          | `aks_nodes`          | AKS worker nodes (sum of pool counts)              |
-| ACI-Groups         | `aci_groups`         | Azure Container Instance groups                     |
-| ACI-Containers     | `aci_containers`     | Containers across all ACI groups                    |
-| Functions          | `functions`          | Function apps                                       |
-| Web-Apps           | `web_apps`           | App Service web apps (non-function sites)           |
-| Container-Apps     | `container_apps`     | Azure Container Apps                                 |
-| ContainerApp-Envs  | `container_app_envs` | Container Apps managed environments                 |
+| Column            | Key                  | Meaning                                       |
+| ----------------- | -------------------- | --------------------------------------------- |
+| Subscription ID   | `subscription_id`    | Target subscription                           |
+| Name              | `subscription_name`  | Subscription display name (tenant mode)       |
+| VMs               | `vms`                | Standalone VMs (scale-set instances excluded) |
+| VMSS              | `vmss`               | VM Scale Sets                                 |
+| VMSS-Instances    | `vmss_instances`     | Live scale-set instances                      |
+| AKS-Clusters      | `aks_clusters`       | AKS clusters                                  |
+| AKS-NodePools     | `aks_nodepools`      | AKS agent pools                               |
+| AKS-Nodes         | `aks_nodes`          | AKS worker nodes (sum of pool counts)         |
+| ACI-Groups        | `aci_groups`         | Azure Container Instance groups               |
+| ACI-Containers    | `aci_containers`     | Containers across all ACI groups              |
+| Functions         | `functions`          | Function apps                                 |
+| Web-Apps          | `web_apps`           | App Service web apps (non-function sites)     |
+| Container-Apps    | `container_apps`     | Azure Container Apps                          |
+| ContainerApp-Envs | `container_app_envs` | Container Apps managed environments           |
 
 ### Table (default)
 
 A fixed-width table is printed to stdout, with a `TOTALS` line at the end. It is wide (14 columns), so the raw console output wraps in a narrow terminal. The same data is shown below as a table for readability:
 
-| Subscription ID | Name | VMs | VMSS | VMSS-Instances | AKS-Clusters | AKS-NodePools | AKS-Nodes | ACI-Groups | ACI-Containers | Functions | Web-Apps | Container-Apps | ContainerApp-Envs |
+| Subscription ID | Name    | VMs | VMSS | VMSS-Instances | AKS-Clusters | AKS-NodePools | AKS-Nodes | ACI-Groups | ACI-Containers | Functions | Web-Apps | Container-Apps | ContainerApp-Envs |
 | --------------- | ------- | --- | ---- | -------------- | ------------ | ------------- | --------- | ---------- | -------------- | --------- | -------- | -------------- | ----------------- |
 | 8da31d20-...    | prod    | 5   | 5    | 6              | 3            | 5             | 6         | 10         | 19             | 4         | 2        | 1              | 1                 |
 | 77ec1fed-...    | sandbox | 1   | 0    | 0              | 0            | 0             | 0         | 0          | 0              | 2         | 1        | 0              | 0                 |
@@ -213,7 +222,20 @@ Use `--write-file [PATH]` to write to a file instead of stdout.
       "subscription_name": "Sponsors"
     }
   ],
-  "totals": { "vms": 5, "vmss": 5, "vmss_instances": 6, "aks_clusters": 3, "aks_nodepools": 5, "aks_nodes": 6, "aci_groups": 10, "aci_containers": 19, "functions": 4, "web_apps": 2, "container_apps": 1, "container_app_envs": 1 }
+  "totals": {
+    "vms": 5,
+    "vmss": 5,
+    "vmss_instances": 6,
+    "aks_clusters": 3,
+    "aks_nodepools": 5,
+    "aks_nodes": 6,
+    "aci_groups": 10,
+    "aci_containers": 19,
+    "functions": 4,
+    "web_apps": 2,
+    "container_apps": 1,
+    "container_app_envs": 1
+  }
 }
 ```
 
@@ -268,22 +290,6 @@ Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is 
 
 - Does not write secrets to stdout/stderr.
 - Files written with `--write-file` contain subscription IDs, names, and counts — store them appropriately.
-
----
-
-## Quick Start
-
-```bash
-pip install -r requirements.txt
-az login
-
-# Count one subscription
-python3 uptycs_sizing_azure.py --mode subscription \
-  --subscription-id 00000000-0000-0000-0000-000000000000 --output table
-
-# Tenant-wide, CSV to a file
-python3 uptycs_sizing_azure.py --mode tenant --output csv --write-file
-```
 
 ---
 
