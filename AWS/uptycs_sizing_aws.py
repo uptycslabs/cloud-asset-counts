@@ -224,6 +224,30 @@ def resolve_external_ec2_hosts(session, region, host_ids):
     return resolved
 
 
+def capacity_provider_kinds(ecs):
+    """Work out whether each capacity provider runs on Fargate or EC2.
+
+    A capacity provider is the rule that decides where a service's tasks run.
+    The two built-in ones, FARGATE and FARGATE_SPOT, are serverless (Fargate).
+    A capacity provider backed by an Auto Scaling group or by ECS Managed
+    Instances runs on your own EC2 instances. Returns a lookup from provider
+    name to "fargate" or "ec2" so services and tasks are counted against the
+    kind of compute they actually use.
+    """
+    kinds = {"FARGATE": "fargate", "FARGATE_SPOT": "fargate"}
+    token = None
+    while True:
+        kwargs = {"maxResults": 100, **({"nextToken": token} if token else {})}
+        resp = ecs.describe_capacity_providers(**kwargs)
+        for cp in resp.get("capacityProviders", []):
+            ec2_backed = cp.get("autoScalingGroupProvider") or cp.get("managedInstancesProvider")
+            kinds[cp.get("name", "")] = "ec2" if ec2_backed else "fargate"
+        token = resp.get("nextToken")
+        if not token:
+            break
+    return kinds
+
+
 def count_ecs(session, region):
     """Count ECS usage in a region, split into EC2-backed and Fargate.
 
@@ -256,6 +280,9 @@ def count_ecs(session, region):
         if not token:
             break
 
+    # Resolve capacity-provider names to Fargate vs EC2 once for the region.
+    cp_kinds = capacity_provider_kinds(ecs)
+
     ecs_services = ecs_ec2 = ecs_fargate = tasks_ec2 = tasks_fargate = 0
     container_instance_ids = set()
 
@@ -272,9 +299,14 @@ def count_ecs(session, region):
                 desc = ecs.describe_services(cluster=cluster, services=service_arns)
                 for s in desc.get("services", []):
                     ecs_services += 1
-                    is_fargate = s.get("launchType") == "FARGATE" or (
-                        s.get("launchType") is None and s.get("capacityProviderStrategy")
-                    )
+                    # A service either states its compute directly or points to
+                    # a capacity provider we look up to find where it runs.
+                    if s.get("launchType"):
+                        is_fargate = s["launchType"] == "FARGATE"
+                    else:
+                        kinds = [cp_kinds.get(c.get("capacityProvider"))
+                                 for c in s.get("capacityProviderStrategy") or []]
+                        is_fargate = "ec2" not in kinds
                     if is_fargate:
                         ecs_fargate += 1
                         tasks_fargate += s.get("runningCount", 0)
@@ -303,7 +335,7 @@ def count_ecs(session, region):
  
                 launch_type = t.get("launchType")
                 cap = t.get("capacityProviderName", "")
-                if launch_type == "FARGATE" or cap in ("FARGATE", "FARGATE_SPOT"):
+                if launch_type == "FARGATE" or cp_kinds.get(cap) == "fargate":
                     tasks_fargate += 1
                 else:
                     tasks_ec2 += 1
