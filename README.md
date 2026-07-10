@@ -14,9 +14,7 @@ This repository contains scripts for AWS, GCP, &amp; Azure to count the cloud as
 
 - Run `python3 -m pip install -r requirements.txt` to install dependencies.
 - `python3 uptycs_sizing_aws.py --mode {org,account} --management-account-id <mgmt_id> --assume-role-name <cross_account_role_name>`
-```
-Note <cross_account_role_name> is not the full ARN, it is just the last (name) part. See [AWS/README.md](AWS/README.md) for more options and examples.
-```
+- **Note** <cross_account_role_name> is not the full ARN, it is just the last (name) part. See [AWS/README.md](AWS/README.md) for more options and examples.
 
 ## Output
 
