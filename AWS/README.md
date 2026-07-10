@@ -82,7 +82,7 @@ Run with either:
 - Permissions to list/describe the counted services, e.g.:
   - `ec2:DescribeInstances`, `ec2:DescribeRegions`
   - `lambda:ListFunctions`
-  - `ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `ecs:ListTasks`, `ecs:DescribeTasks`, `ecs:ListContainerInstances`, `ecs:DescribeContainerInstances`
+  - `ecs:ListClusters`, `ecs:ListServices`, `ecs:DescribeServices`, `ecs:ListTasks`, `ecs:DescribeTasks`, `ecs:ListContainerInstances`, `ecs:DescribeContainerInstances`, `ecs:DescribeCapacityProviders`
   - `ssm:DescribeInstanceInformation` (to reconcile ECS Anywhere hosts with EC2)
   - `eks:ListClusters`, `eks:ListNodegroups`
   - `s3:ListAllMyBuckets`
