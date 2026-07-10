@@ -3,7 +3,7 @@
 """ 
 Please refer README.md for more information on how to use the script
 
-Version: 1.0
+Version: 1.1.0
 """
 
 import argparse
@@ -20,10 +20,34 @@ from botocore.exceptions import ClientError, ParamValidationError
 
 ADAPTIVE_CFG = Config(retries={"max_attempts": 10, "mode": "adaptive"}, user_agent_extra="aws-resource-counter/1.1")
 
-# The per-region and account-wide count fields reported for each account.
-REGIONAL_FIELDS = ("ec2", "lambda", "ecs_clusters", "ecs_services", "ecs_ec2", "ecs_fargate",
-                   "ecs_tasks_ec2", "ecs_tasks_fargate", "ecs_container_hosts",
-                   "eks_clusters", "eks_nodegroups", "eks_nodes")
+# The single source of field order for every output format (table, csv, json),
+# so their columns can never diverge. Each entry is (label, json key, table width).
+OUTPUT_FIELDS = [
+    ("EC2-Standalone", "ec2_standalone", 15),
+    ("ECS-Clusters", "ecs_clusters", 14),
+    ("ECS-Services-Total", "ecs_services_total", 19),
+    ("ECS-Services-EC2", "ecs_services_ec2", 17),
+    ("ECS-Services-Fargate", "ecs_services_fargate", 21),
+    ("ECS-Tasks-EC2", "ecs_tasks_ec2", 14),
+    ("ECS-Tasks-Fargate", "ecs_tasks_fargate", 18),
+    ("ECS-Container-Instances", "ecs_container_instances", 24),
+    ("EKS-Clusters", "eks_clusters", 13),
+    ("EKS-NodeGroups", "eks_nodegroups", 15),
+    ("EKS-Nodes", "eks_nodes", 11),
+    ("Lambda-Functions", "lambda_functions", 17),
+    ("S3-Buckets", "s3_buckets", 11),
+    ("IAM-Users", "iam_users", 11),
+    ("IAM-Roles", "iam_roles", 11),
+]
+
+# The per-region and account-wide count fields reported for each account, kept
+# in OUTPUT_FIELDS order so result dicts are built in canonical order and every
+# format (including JSON, which serializes dict insertion order) stays in sync
+# without any per-record reordering.
+REGIONAL_FIELDS = ("ec2_standalone", "ecs_clusters", "ecs_services_total", "ecs_services_ec2",
+                   "ecs_services_fargate", "ecs_tasks_ec2", "ecs_tasks_fargate",
+                   "ecs_container_instances", "eks_clusters", "eks_nodegroups", "eks_nodes",
+                   "lambda_functions")
 GLOBAL_FIELDS = ("s3_buckets", "iam_users", "iam_roles")
 
 
@@ -177,6 +201,20 @@ def count_iam(session):
         if not token:
             break
     return users, roles
+
+
+def get_account_alias(session):
+    """Return the account's IAM alias, or "" if none is set.
+
+    In account mode there's no Organizations name to use, so the IAM account
+    alias -- the friendly name in the sign-in URL -- serves as the account name.
+    An account can have at most one alias, and may have none.
+    """
+    try:
+        iam = session.client("iam", config=ADAPTIVE_CFG)
+        return (iam.list_account_aliases().get("AccountAliases") or [""])[0]
+    except ClientError:
+        return ""
 
 
 def resolve_external_ec2_hosts(session, region, host_ids):
@@ -461,9 +499,15 @@ def count_for_account(base_session, account_id, account_name, regions, assume_ro
         except ClientError as e:
             msg = f"AssumeRole failed: {e}"
             print(f"WARNING: account {account_id} {account_name}".rstrip() + f": {msg}; reporting zeros", file=sys.stderr)
-            failed = {k: 0 for k in REGIONAL_FIELDS + GLOBAL_FIELDS}
-            failed.update({"account_id": account_id, "account_name": account_name, "error": msg})
+            failed = {"account_id": account_id, "account_name": account_name}
+            failed.update({k: 0 for k in REGIONAL_FIELDS + GLOBAL_FIELDS})
+            failed["error"] = msg
             return failed
+
+    # In org mode the Organizations name is already set; in account mode it's
+    # empty, so fall back to the account's IAM alias (if any).
+    if not account_name:
+        account_name = get_account_alias(sess)
 
     try:
         s3_count = count_s3(sess)
@@ -490,11 +534,11 @@ def count_for_account(base_session, account_id, account_name, regions, assume_ro
         result = {k: 0 for k in REGIONAL_FIELDS}
         try:
             ec2_count, ec2_ids = count_ec2(sess, region)
-            result["ec2"] = ec2_count
+            result["ec2_standalone"] = ec2_count
         except ClientError:
             ec2_ids = set()
         try:
-            result["lambda"] = count_lambda(sess, region)
+            result["lambda_functions"] = count_lambda(sess, region)
         except ClientError:
             pass
         try:
@@ -502,19 +546,19 @@ def count_for_account(base_session, account_id, account_name, regions, assume_ro
 
             result.update({
                 "ecs_clusters": c,
-                "ecs_services": s,
-                "ecs_ec2": e2,
-                "ecs_fargate": fg,
+                "ecs_services_total": s,
+                "ecs_services_ec2": e2,
+                "ecs_services_fargate": fg,
                 "ecs_tasks_ec2": te2,
                 "ecs_tasks_fargate": tfg,
-                "ecs_container_hosts": len(ecs_host_ids),
+                "ecs_container_instances": len(ecs_host_ids),
             })
 
             # A container host that is also an EC2 instance shouldn't add to both
             # totals, so take it out of the EC2 count.
             overlap = ec2_ids & ecs_host_ids
 
-            result["ec2"] = max(0, result["ec2"] - len(overlap))
+            result["ec2_standalone"] = max(0, result["ec2_standalone"] - len(overlap))
         except ClientError:
             pass
         try:
@@ -524,20 +568,21 @@ def count_for_account(base_session, account_id, account_name, regions, assume_ro
             # Likewise, a worker node that is also an EC2 instance shouldn't add
             # to both totals, so take it out of the EC2 count. Auto Mode nodes
             # aren't in the EC2 count to begin with, so they stay counted here.
-            result["ec2"] = max(0, result["ec2"] - len(ec2_ids & eks_node_ids))
+            result["ec2_standalone"] = max(0, result["ec2_standalone"] - len(ec2_ids & eks_node_ids))
         except ClientError:
             pass
         return result
 
-    totals = {k: 0 for k in REGIONAL_FIELDS}
+    regional = {k: 0 for k in REGIONAL_FIELDS}
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(regions))) as exe:
         for res in exe.map(region_worker, regions):
             for k, v in res.items():
-                totals[k] += v
+                regional[k] += v
 
-    totals.update({"s3_buckets": s3_count, "iam_users": iam_users, "iam_roles": iam_roles,
-                   "account_id": account_id, "account_name": account_name})
-    return totals
+    result = {"account_id": account_id, "account_name": account_name}
+    result.update(regional)
+    result.update({"s3_buckets": s3_count, "iam_users": iam_users, "iam_roles": iam_roles})
+    return result
 
 
 def main():
@@ -606,19 +651,9 @@ def main():
             print(payload)
         return
 
-    # The columns to show, as (heading, value key, column width). The same list
-    # drives both the table and the CSV so they always match. The first two
-    # columns identify the account and get their own labels on the TOTALS row.
-    header = [
-        ("Account ID", "account_id", 14), ("Name", "account_name", 20),
-        ("EC2", "ec2", 6), ("ECS-Container-Hosts", "ecs_container_hosts", 20),
-        ("ECS-Tasks-Fargate", "ecs_tasks_fargate", 20), ("Lambda", "lambda", 8),
-        ("EKS-Clusters", "eks_clusters", 13), ("EKS-NodeGroups", "eks_nodegroups", 15),
-        ("EKS-Nodes", "eks_nodes", 11), ("ECS-Clusters", "ecs_clusters", 14),
-        ("ECS-Services", "ecs_services", 14), ("ECS-EC2", "ecs_ec2", 9),
-        ("ECS-Fargate", "ecs_fargate", 13), ("ECS-Tasks-EC2", "ecs_tasks_ec2", 17),
-        ("S3-Buckets", "s3_buckets", 11), ("IAM Users", "iam_users", 11), ("IAM Roles", "iam_roles", 11),
-    ]
+    # The first two columns identify the account and get their own labels on the
+    # TOTALS row; the rest come from OUTPUT_FIELDS so all formats stay in sync.
+    header = [("Account ID", "account_id", 14), ("Name", "account_name", 20)] + OUTPUT_FIELDS
     data_cols = header[2:]  # everything past the two identity columns
 
     if args.output == "csv":
