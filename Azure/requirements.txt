@@ -1,4 +1,7 @@
-azure-identity 
-azure-mgmt-subscription 
-azure-mgmt-compute 
-azure-mgmt-containerservice
+azure-identity==1.25.3
+azure-mgmt-resource-subscriptions==1.0.0b2
+azure-mgmt-compute==38.1.0
+azure-mgmt-containerservice==41.3.0
+azure-mgmt-containerinstance==10.1.0
+azure-mgmt-web==11.0.0
+azure-mgmt-appcontainers==5.0.0
