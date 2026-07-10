@@ -76,8 +76,6 @@ Authenticate with **either**:
 
 The script uses `DefaultAzureCredential`, which picks up either automatically.
 
-Fastest path from a clean checkout:
-
 ```bash
 pip install -r requirements.txt
 az login
@@ -290,9 +288,3 @@ Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is 
 
 - Does not write secrets to stdout/stderr.
 - Files written with `--write-file` contain subscription IDs, names, and counts — store them appropriately.
-
----
-
-## License
-
-Add a license (e.g., MIT/Apache-2.0) if you plan to distribute this tool.
