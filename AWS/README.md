@@ -216,7 +216,7 @@ The same set of columns drives the table and CSV, so they always match:
 
 ### Table (default)
 
-A fixed-width table is printed to stdout, with a `TOTALS` line at the end. It is wide (17 columns), so the raw console output wraps in a narrow terminal. The same data is shown below as a table for readability:
+A fixed-width table is printed to stdout, with a `TOTALS` line and a scan-timing footer (UTC start/end) at the end. It is wide (17 columns), so the raw console output wraps in a narrow terminal. The same data is shown below as a table for readability:
 
 | Account ID   | Name       | EC2-Standalone | ECS-Clusters | ECS-Services-Total | ECS-Services-EC2 | ECS-Services-Fargate | ECS-Tasks-EC2 | ECS-Tasks-Fargate | ECS-Container-Instances | EKS-Clusters | EKS-NodeGroups | EKS-Nodes | Lambda-Functions | S3-Buckets | IAM-Users | IAM-Roles |
 | ------------ | ---------- | -------------- | ------------ | ------------------ | ---------------- | -------------------- | ------------- | ----------------- | ----------------------- | ------------ | -------------- | --------- | ---------------- | ---------- | --------- | --------- |
@@ -226,16 +226,35 @@ A fixed-width table is printed to stdout, with a `TOTALS` line at the end. It is
 
 > If an account can’t be assumed, the row shows zeros and an `error` note explaining why, so one account never hides the rest of the report.
 
+The footer reports when the scan started and ended (UTC):
+
+```
+Scan started: 2026-07-13T09:00:01Z
+Scan ended:   2026-07-13T09:02:14Z
+```
+
 ### CSV
 
-The header row matches the columns above; the final row is a **TOTALS** summary. Use `--write-file [PATH]` to write to a file instead of stdout.
+The header row matches the columns above; then one row per account, a **TOTALS** summary row, and two trailing scan-timing rows (`Scan started`, `Scan ended`). Use `--write-file [PATH]` to write to a file instead of stdout.
+
+```csv
+Account ID,Name,EC2-Standalone,...
+111122223333,prod-infra,87,...
+TOTALS,,90,...
+Scan started,2026-07-13T09:00:01Z
+Scan ended,2026-07-13T09:02:14Z
+```
 
 ### JSON
 
-Structure (`results` is one object per account; `totals` aggregates all counted fields):
+Structure (`scan` holds run timing; `results` is one object per account; `totals` aggregates all counted fields):
 
 ```json
 {
+  "scan": {
+    "started_at": "2026-07-13T09:00:01Z",
+    "ended_at": "2026-07-13T09:02:14Z"
+  },
   "results": [
     {
       "account_id": "111122223333",
