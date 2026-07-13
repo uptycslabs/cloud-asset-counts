@@ -115,8 +115,25 @@ def count_compute(credentials, project_id: str, regions=None) -> Dict[str, int]:
             migs += 1
             mig_instances += member_count
 
+    # Regional MIGs have no project-wide aggregated_list on the regional client,
+    # so they must be listed one region at a time. Resolve the region list here
+    # rather than relying on the caller, so a regional group is never silently
+    # missed when no regions are passed in.
+    if regions:
+        regional_scan = list(regions)
+    else:
+        try:
+            regional_scan = list_regions(credentials, project_id)
+        except GoogleAPIError:
+            regional_scan = []
+            print(
+                f"NOTE: project {project_id}: could not list regions; regional "
+                f"managed instance groups may be undercounted",
+                file=sys.stderr,
+            )
+
     skipped_regions = []
-    for region in regions or []:
+    for region in regional_scan:
         try:
             managers = list(regional_migs_client.list(project=project_id, region=region))
         except GoogleAPIError:
@@ -287,8 +304,6 @@ def list_projects(credentials, organization_id=None) -> List[Dict[str, str]]:
 
     projects = []
     for project in client.search_projects(query=query):
-        if project.state != resourcemanager_v3.Project.State.ACTIVE:
-            continue
         projects.append({"id": project.project_id, "name": project.display_name or ""})
     return projects
 
@@ -315,7 +330,7 @@ def count_for_project(credentials, project_id, project_name, regions=None) -> Di
     for counter, fields in COUNTERS:
         try:
             result.update(counter(credentials, project_id, regions))
-        except GoogleAPIError as error:
+        except Exception as error:
             label = f"{project_id} {project_name}".rstrip()
             print(
                 f"WARNING: project {label}: could not count "
