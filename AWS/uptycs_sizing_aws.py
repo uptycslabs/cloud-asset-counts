@@ -644,7 +644,7 @@ def main():
         if args.write_file:
             return args.write_file
         scope = (args.account_id or caller) if args.mode == "account" else "org"
-        return f"uptycs_sizing_{scope}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
+        return f"uptycs_sizing_{scope}_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%SZ')}.{ext}"
 
     if args.output == "json":
         payload = json.dumps({"scan": scan, "results": results, "totals": totals}, indent=2)
