@@ -3,7 +3,7 @@
 """ 
 Please refer README.md for more information on how to use the script
 
-Version: 1.1.0
+Version: 1.2.0
 """
 
 import argparse
@@ -11,7 +11,7 @@ import concurrent.futures
 import csv
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 import boto3
@@ -611,6 +611,7 @@ def main():
     )
 
     args = parser.parse_args()
+    started_dt = datetime.now(timezone.utc)
     base = boto3.Session(profile_name=args.profile) if args.profile else boto3.Session()
     caller = base.client("sts", config=ADAPTIVE_CFG).get_caller_identity().get("Account", "")
 
@@ -626,6 +627,11 @@ def main():
 
     totals = {k: sum(r.get(k, 0) for r in results if k in r) for k in results[0].keys() if k not in ("account_id", "account_name", "error")}
 
+    # Run-level timing, shared across every output format (UTC, ISO 8601).
+    ended_dt = datetime.now(timezone.utc)
+    def _iso(dt): return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    scan = {"started_at": _iso(started_dt), "ended_at": _iso(ended_dt)}
+
     def resolve_outfile(ext):
         """Work out where the output should go.
 
@@ -638,10 +644,10 @@ def main():
         if args.write_file:
             return args.write_file
         scope = (args.account_id or caller) if args.mode == "account" else "org"
-        return f"uptycs_sizing_{scope}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
+        return f"uptycs_sizing_{scope}_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%SZ')}.{ext}"
 
     if args.output == "json":
-        payload = json.dumps({"results": results, "totals": totals}, indent=2)
+        payload = json.dumps({"scan": scan, "results": results, "totals": totals}, indent=2)
         path = resolve_outfile("json")
         if path:
             with open(path, "w") as f:
@@ -667,6 +673,8 @@ def main():
             for r in results:
                 writer.writerow([r[key] for _, key, _ in header])
             writer.writerow(["TOTALS", ""] + [totals[key] for _, key, _ in data_cols])
+            writer.writerow(["Scan started", scan["started_at"]])
+            writer.writerow(["Scan ended", scan["ended_at"]])
         finally:
             if path:
                 f.close()
@@ -688,6 +696,9 @@ def main():
 
     print("\nTOTALS:")
     print(fmt(["Accounts", ""] + [totals[key] for _, key, _ in data_cols]))
+
+    print(f"\nScan started: {scan['started_at']}")
+    print(f"Scan ended:   {scan['ended_at']}")
 
 
 if __name__ == "__main__":
