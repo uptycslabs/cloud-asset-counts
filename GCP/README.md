@@ -187,7 +187,7 @@ The same set of columns drives the table and CSV, so they always match:
 
 ### Table (default)
 
-A fixed-width table is printed to your screen, with a `TOTALS` line at the end. It is wide, so the raw
+A fixed-width table is printed to your screen, with a `TOTALS` line and a scan-timing footer (UTC start/end) at the end. It is wide, so the raw
 console output may wrap in a narrow terminal. The same data is shown below as a table for readability:
 
 | Project ID     | Name    | VMs | MIGs | MIG-Instances | GKE-Clusters | GKE-NodePools | GKE-Nodes | CloudRun-Services | Cloud-Functions |
@@ -196,17 +196,28 @@ console output may wrap in a narrow terminal. The same data is shown below as a 
 | sandbox-project| sandbox | 1   | 0    | 0             | 0            | 0             | 0         | 1                 | 2               |
 | **TOTALS**     |         | 9   | 2    | 6             | 3            | 5             | 12        | 5                 | 11              |
 
+The footer reports when the scan started and ended (UTC):
+
+```
+Scan started: 2026-07-15T09:00:01Z
+Scan ended:   2026-07-15T09:02:14Z
+```
+
 ### CSV
 
-The header row matches the columns above; the final data row is a **TOTALS** summary.
+The header row matches the columns above; then one row per project, a **TOTALS** summary row, and two trailing scan-timing rows (`Scan started`, `Scan ended`).
 Use `--write-file [PATH]` to write to a file instead of your screen.
 
 ### JSON
 
-`results` is one object per project; `totals` aggregates the counts:
+`scan` holds run timing; `results` is one object per project; `totals` aggregates the counts:
 
 ```json
 {
+  "scan": {
+    "started_at": "2026-07-15T09:00:01Z",
+    "ended_at": "2026-07-15T09:02:14Z"
+  },
   "results": [
     {
       "vms": 8,
@@ -235,7 +246,7 @@ Use `--write-file [PATH]` to write to a file instead of your screen.
 ```
 
 Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is auto-named
-`uptycs_sizing_gcp_<scope>_<timestamp>.json`.
+`uptycs_sizing_gcp_<scope>_<timestamp>.json` (timestamp in UTC).
 
 ---
 

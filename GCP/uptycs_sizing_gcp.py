@@ -7,7 +7,7 @@ Counts key Google Cloud compute resources across a single project, or across
 every active project your credentials can access, and reports the results as a
 table, CSV, or JSON. See README.md for setup and usage.
 
-Version: 1.0
+Version: 1.1.0
 """
 
 import argparse
@@ -15,7 +15,7 @@ import concurrent.futures
 import csv
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
 import google.auth
@@ -334,6 +334,7 @@ def main():
     )
 
     args = parser.parse_args()
+    started_dt = datetime.now(timezone.utc)
     if args.mode == "project" and not args.project_id:
         parser.error("--mode project requires --project-id")
 
@@ -368,6 +369,11 @@ def main():
 
     totals = {field: sum(r.get(field, 0) for r in results) for field in COUNT_FIELDS}
 
+    # Run-level timing, shared across every output format (UTC, ISO 8601).
+    ended_dt = datetime.now(timezone.utc)
+    def _iso(dt): return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    scan = {"started_at": _iso(started_dt), "ended_at": _iso(ended_dt)}
+
     def resolve_outfile(ext):
         """Return the path to write to, or None to print to standard output."""
         if args.write_file is None:
@@ -375,10 +381,10 @@ def main():
         if args.write_file:
             return args.write_file
         scope = args.project_id if args.mode == "project" else "organization"
-        return f"uptycs_sizing_gcp_{scope}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
+        return f"uptycs_sizing_gcp_{scope}_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%SZ')}.{ext}"
 
     if args.output == "json":
-        payload = json.dumps({"results": results, "totals": totals}, indent=2)
+        payload = json.dumps({"scan": scan, "results": results, "totals": totals}, indent=2)
         path = resolve_outfile("json")
         if path:
             with open(path, "w") as handle:
@@ -399,6 +405,8 @@ def main():
             for r in results:
                 writer.writerow([r[key] for _, key, _ in COLUMNS])
             writer.writerow(["TOTALS", ""] + [totals[key] for _, key, _ in data_cols])
+            writer.writerow(["Scan started", scan["started_at"]])
+            writer.writerow(["Scan ended", scan["ended_at"]])
         finally:
             if path:
                 handle.close()
@@ -425,6 +433,9 @@ def main():
 
     print("\nTOTALS:")
     print(fmt(["Projects", ""] + [totals[key] for _, key, _ in data_cols]))
+
+    print(f"\nScan started: {scan['started_at']}")
+    print(f"Scan ended:   {scan['ended_at']}")
 
 
 if __name__ == "__main__":
