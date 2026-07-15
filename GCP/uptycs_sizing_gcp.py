@@ -94,17 +94,29 @@ def count_compute(credentials, project_id: str, regions=None) -> Dict[str, int]:
     migs = 0
     mig_instances = 0
 
+    # instanceGroupManagers.aggregatedList returns both zonal MIGs (under
+    # zones/<zone> scopes) and regional MIGs (under regions/<region> scopes), so
+    # one project-wide pass covers both. The scope prefix says which client to
+    # use to list a group's managed instances -- a regional group must be listed
+    # with the regional client, or the API rejects the region as an unknown zone.
     for scope, scoped in zonal_migs_client.aggregated_list(project=project_id):
         managers = getattr(scoped, "instance_group_managers", None) or []
         if not managers:
             continue
-        zone = scope.split("/")[-1]
-        if region_filter and region_of(zone) not in region_filter:
+        location = scope.split("/")[-1]
+        is_regional = scope.startswith("regions/")
+        region = location if is_regional else region_of(location)
+        if region_filter and region not in region_filter:
             continue
         for manager in managers:
-            members = zonal_migs_client.list_managed_instances(
-                project=project_id, zone=zone, instance_group_manager=manager.name
-            )
+            if is_regional:
+                members = regional_migs_client.list_managed_instances(
+                    project=project_id, region=location, instance_group_manager=manager.name
+                )
+            else:
+                members = zonal_migs_client.list_managed_instances(
+                    project=project_id, zone=location, instance_group_manager=manager.name
+                )
             member_count = 0
             for member in members:
                 member_count += 1
@@ -114,51 +126,6 @@ def count_compute(credentials, project_id: str, regions=None) -> Dict[str, int]:
                 continue
             migs += 1
             mig_instances += member_count
-
-    # Regional MIGs have no project-wide aggregated_list on the regional client,
-    # so they must be listed one region at a time. Resolve the region list here
-    # rather than relying on the caller, so a regional group is never silently
-    # missed when no regions are passed in.
-    if regions:
-        regional_scan = list(regions)
-    else:
-        try:
-            regional_scan = list_regions(credentials, project_id)
-        except GoogleAPIError:
-            regional_scan = []
-            print(
-                f"NOTE: project {project_id}: could not list regions; regional "
-                f"managed instance groups may be undercounted",
-                file=sys.stderr,
-            )
-
-    skipped_regions = []
-    for region in regional_scan:
-        try:
-            managers = list(regional_migs_client.list(project=project_id, region=region))
-        except GoogleAPIError:
-            skipped_regions.append(region)
-            continue
-        for manager in managers:
-            members = regional_migs_client.list_managed_instances(
-                project=project_id, region=region, instance_group_manager=manager.name
-            )
-            member_count = 0
-            for member in members:
-                member_count += 1
-                if member.instance:
-                    managed_instance_urls.add(member.instance)
-            if _is_gke_managed(manager.name):
-                continue
-            migs += 1
-            mig_instances += member_count
-    if skipped_regions:
-        print(
-            f"NOTE: project {project_id}: skipped {len(skipped_regions)} region(s) for "
-            f"managed instance groups (access denied or unavailable): "
-            f"{', '.join(skipped_regions)}",
-            file=sys.stderr,
-        )
 
     vms = 0
     for scope, scoped in instances_client.aggregated_list(project=project_id):
