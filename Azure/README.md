@@ -183,7 +183,7 @@ The same set of columns drives the table and CSV, so they always match:
 
 ### Table (default)
 
-A fixed-width table is printed to stdout, with a `TOTALS` line at the end. It is wide (14 columns), so the raw console output wraps in a narrow terminal. The same data is shown below as a table for readability:
+A fixed-width table is printed to stdout, with a `TOTALS` line and a scan-timing footer (UTC start/end) at the end. It is wide (14 columns), so the raw console output wraps in a narrow terminal. The same data is shown below as a table for readability:
 
 | Subscription ID | Name    | VMs | VMSS | VMSS-Instances | AKS-Clusters | AKS-NodePools | AKS-Nodes | ACI-Groups | ACI-Containers | Functions | Web-Apps | Container-Apps | ContainerApp-Envs |
 | --------------- | ------- | --- | ---- | -------------- | ------------ | ------------- | --------- | ---------- | -------------- | --------- | -------- | -------------- | ----------------- |
@@ -191,17 +191,28 @@ A fixed-width table is printed to stdout, with a `TOTALS` line at the end. It is
 | 77ec1fed-...    | sandbox | 1   | 0    | 0              | 0            | 0             | 0         | 0          | 0              | 2         | 1        | 0              | 0                 |
 | **TOTALS**      |         | 6   | 5    | 6              | 3            | 5             | 6         | 10         | 19             | 6         | 3        | 1              | 1                 |
 
+The footer reports when the scan started and ended (UTC):
+
+```
+Scan started: 2026-07-14T09:00:01Z
+Scan ended:   2026-07-14T09:02:14Z
+```
+
 ### CSV
 
-The header row matches the columns above; the final data row is a **TOTALS** summary.
+The header row matches the columns above; then one row per subscription, a **TOTALS** summary row, and two trailing scan-timing rows (`Scan started`, `Scan ended`).
 Use `--write-file [PATH]` to write to a file instead of stdout.
 
 ### JSON
 
-`results` is one object per subscription; `totals` aggregates the compute fields:
+`scan` holds run timing; `results` is one object per subscription; `totals` aggregates the compute fields:
 
 ```json
 {
+  "scan": {
+    "started_at": "2026-07-14T09:00:01Z",
+    "ended_at": "2026-07-14T09:02:14Z"
+  },
   "results": [
     {
       "vms": 5,
@@ -238,7 +249,7 @@ Use `--write-file [PATH]` to write to a file instead of stdout.
 ```
 
 Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is auto-named
-`uptycs_sizing_azure_<scope>_<timestamp>.json`.
+`uptycs_sizing_azure_<scope>_<timestamp>.json` (timestamp in UTC).
 
 ---
 

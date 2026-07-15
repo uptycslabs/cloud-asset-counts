@@ -11,7 +11,7 @@ import concurrent.futures
 import csv
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 from azure.core.exceptions import HttpResponseError
@@ -315,6 +315,7 @@ def main():
     )
 
     args = parser.parse_args()
+    started_dt = datetime.now(timezone.utc)
     if args.mode == "subscription" and not args.subscription_id:
         parser.error("--mode subscription requires --subscription-id")
 
@@ -339,6 +340,11 @@ def main():
 
     totals = {k: sum(r.get(k, 0) for r in results) for k in REGIONAL_FIELDS}
 
+    # Run-level timing, shared across every output format (UTC, ISO 8601).
+    ended_dt = datetime.now(timezone.utc)
+    def _iso(dt): return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    scan = {"started_at": _iso(started_dt), "ended_at": _iso(ended_dt)}
+
     def resolve_outfile(ext):
         """Return the path to write to, or None to print to stdout.
 
@@ -350,10 +356,10 @@ def main():
         if args.write_file:
             return args.write_file
         scope = args.subscription_id if args.mode == "subscription" else "tenant"
-        return f"uptycs_sizing_azure_{scope}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
+        return f"uptycs_sizing_azure_{scope}_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%SZ')}.{ext}"
 
     if args.output == "json":
-        payload = json.dumps({"results": results, "totals": totals}, indent=2)
+        payload = json.dumps({"scan": scan, "results": results, "totals": totals}, indent=2)
         path = resolve_outfile("json")
         if path:
             with open(path, "w") as f:
@@ -376,6 +382,8 @@ def main():
             for r in results:
                 writer.writerow([r[key] for _, key, _ in COLUMNS])
             writer.writerow(["TOTALS", ""] + [totals[key] for _, key, _ in data_cols])
+            writer.writerow(["Scan started", scan["started_at"]])
+            writer.writerow(["Scan ended", scan["ended_at"]])
         finally:
             if path:
                 f.close()
@@ -397,6 +405,9 @@ def main():
 
     print("\nTOTALS:")
     print(fmt(["Subscriptions", ""] + [totals[key] for _, key, _ in data_cols]))
+
+    print(f"\nScan started: {scan['started_at']}")
+    print(f"Scan ended:   {scan['ended_at']}")
 
 
 if __name__ == "__main__":
