@@ -275,13 +275,23 @@ def list_projects(credentials, organization_id=None) -> List[Dict[str, str]]:
     # immediate parent only, which is why a plain org-parent query misses
     # folder-nested projects.
     folders_client = resourcemanager_v3.FoldersClient(credentials=credentials)
-    projects, parents = [], [f"organizations/{organization_id}"]
+    projects, parents, skipped = [], [f"organizations/{organization_id}"], []
     while parents:
         parent = parents.pop()
-        parents.extend(f.name for f in folders_client.list_folders(parent=parent))
-        projects.extend(
-            {"id": p.project_id, "name": p.display_name or ""}
-            for p in projects_client.search_projects(query=f"state:ACTIVE parent:{parent}")
+        try:
+            parents.extend(f.name for f in folders_client.list_folders(parent=parent))
+            projects.extend(
+                {"id": p.project_id, "name": p.display_name or ""}
+                for p in projects_client.search_projects(query=f"state:ACTIVE parent:{parent}")
+            )
+        except GoogleAPIError:
+            skipped.append(parent)
+    if skipped:
+        print(
+            f"NOTE: could not read {len(skipped)} organization node(s) "
+            f"(access denied or unavailable); projects under them are not counted: "
+            f"{', '.join(skipped)}",
+            file=sys.stderr,
         )
     return projects
 

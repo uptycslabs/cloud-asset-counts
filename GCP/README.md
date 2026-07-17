@@ -24,6 +24,9 @@ is **not** also counted under **VMs**, so no machine is counted twice.
   can make this an approximate, point-in-time figure.
 - **Cloud Run** scales the number of running instances up and down automatically, so only the number
   of services is reported, not the number of running instances.
+- **Organization mode** covers every folder and project your credentials can read. A folder or project
+  you lack access to is skipped (a note is written to standard error), so the totals reflect only the
+  part of the organization hierarchy visible to your credentials.
 
 ---
 
