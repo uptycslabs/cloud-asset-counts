@@ -254,8 +254,8 @@ COLUMNS = [
 def list_projects(credentials, organization_id=None) -> List[Dict[str, str]]:
     """List the active projects the current credentials can access.
 
-    When an organization id is given, the list is limited to projects that
-    belong to that organization.
+    When an organization id is given, the list covers every active project in
+    that organization, including projects nested inside folders at any depth.
 
     Args:
         credentials: Google Cloud credentials.
@@ -264,14 +264,25 @@ def list_projects(credentials, organization_id=None) -> List[Dict[str, str]]:
     Returns:
         One ``{"id": ..., "name": ...}`` entry per active project.
     """
-    client = resourcemanager_v3.ProjectsClient(credentials=credentials)
-    query = "state:ACTIVE"
-    if organization_id:
-        query += f" parent:organizations/{organization_id}"
+    projects_client = resourcemanager_v3.ProjectsClient(credentials=credentials)
+    if not organization_id:
+        return [{"id": p.project_id, "name": p.display_name or ""}
+                for p in projects_client.search_projects(query="state:ACTIVE")]
 
-    projects = []
-    for project in client.search_projects(query=query):
-        projects.append({"id": project.project_id, "name": project.display_name or ""})
+    # Projects sit either directly under the org or nested in folders at any
+    # depth, so walk the whole tree: at each node collect its projects and
+    # descend into its subfolders. search_projects' parent: filter matches the
+    # immediate parent only, which is why a plain org-parent query misses
+    # folder-nested projects.
+    folders_client = resourcemanager_v3.FoldersClient(credentials=credentials)
+    projects, parents = [], [f"organizations/{organization_id}"]
+    while parents:
+        parent = parents.pop()
+        parents.extend(f.name for f in folders_client.list_folders(parent=parent))
+        projects.extend(
+            {"id": p.project_id, "name": p.display_name or ""}
+            for p in projects_client.search_projects(query=f"state:ACTIVE parent:{parent}")
+        )
     return projects
 
 
