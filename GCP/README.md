@@ -96,11 +96,15 @@ python3 uptycs_sizing_gcp.py --mode project --project-id my-project-id --output 
 
 ### GCP permissions
 
-- The **Viewer** role (`roles/viewer`) on each project you want to count is enough for every listing
-  the tool performs.
-- For **organization-wide** runs, the account also needs permission to list projects across the
-  organization — for example the **Browser** (`roles/browser`) or a Viewer role granted at the
-  organization or folder level.
+- The **Viewer** role (`roles/viewer`) on each project you want to count is enough for the resource
+  listing the tool performs.
+- For **organization-wide** runs, grant **both** roles at the **organization node**:
+  - **Browser** (`roles/browser`) — to discover the folder/project hierarchy
+    (`resourcemanager.folders.list`, which `roles/viewer` does **not** include).
+  - **Viewer** (`roles/viewer`) — to read and count resources in each project.
+
+  Neither alone is sufficient: Browser can walk the hierarchy but grants no resource-read
+  permissions, and Viewer can count resources but cannot list folders.
 - Each service's API must be **enabled** on the project (Compute Engine, Kubernetes Engine, Cloud Run,
   Cloud Functions). A service whose API is disabled is reported as `0`.
 
