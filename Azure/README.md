@@ -7,7 +7,7 @@ Outputs in **table**, **CSV**, or **JSON** (to stdout or to a file).
 Resources counted:
 
 - **Virtual Machines** — every existing VM (deleted VMs don't appear; deallocated VMs are still counted). VMs that belong to a scale set are reported under VMSS, not here.
-- **VM Scale Sets** — scale sets and their live **instances**
+- **VM Scale Sets** — standalone scale sets and their live **instances** (AKS-managed scale sets are excluded and counted under AKS)
 - **AKS** — clusters, node pools, and worker **nodes**
 - **Azure Container Instances** — container groups and **containers**
 - **App Service** — **Functions** and **Web Apps** (split by site kind)
@@ -23,9 +23,14 @@ A machine that belongs to a **VM Scale Set** is reported under `VMSS-Instances` 
 from the standalone `VMs` count, so no instance is counted twice. (Uniform scale-set instances
 never appear as standalone VMs; Flexible-orchestration members are filtered out explicitly.)
 
+AKS node pools are themselves VM Scale Sets (tagged `aks-managed-poolName`, in the cluster's
+auto-created `MC_...` node resource group). They are reported **only** under the AKS columns and
+excluded from `VMSS`/`VMSS-Instances`, so an AKS worker is never counted both as a generic
+scale-set instance and an AKS node.
+
 ### Known blind spots
 
-- **AKS** node counts come from each pool's `count` (or `max_count` isn't used — the last-known value is reported). Cluster-autoscaler churn, **virtual nodes** (ACI-backed), and **Node Autoprovisioning** nodes are not represented; exact live counts require the cluster's Kubernetes API.
+- **AKS** node counts come from each pool's **live** `count` via the per-pool `agent_pools` API, so cluster-autoscaler-added nodes **are** included — no Kubernetes API access required. **Virtual nodes** (ACI-backed) and **Node Autoprovisioning** nodes are still not represented, as they aren't backed by a regular agent pool.
 - **Functions** on a Consumption plan and **Container Apps** are serverless — their worker/replica counts are dynamic, so only the app/environment counts are reported.
 
 ---
@@ -35,7 +40,7 @@ never appear as standalone VMs; Flexible-orchestration members are filtered out 
 - 🏢 **Tenant-wide mode**: enumerate all **enabled** subscriptions the credential can access.
 - 🔎 **Single-subscription mode**: count in one subscription.
 - 🧩 **Modular**: a small counter registry drives which resources are counted and the output columns — adding a resource type is a one-line change.
-- 🧮 **De-duplicated VMs**: scale-set instances are not double-counted as VMs.
+- 🧮 **De-duplicated**: scale-set instances aren't double-counted as VMs, and AKS-managed scale sets aren't double-counted as generic VMSS.
 - 🧵 **Parallel per-subscription** scans (up to 16 workers).
 - 🧾 **Multiple output formats**: table (pretty), CSV, JSON — printed to stdout or written to a file.
 - 🛟 **Resilient**: a per-service failure contributes `0` and the rest of the row still renders.
@@ -169,11 +174,11 @@ The same set of columns drives the table and CSV, so they always match:
 | Subscription ID   | `subscription_id`    | Target subscription                           |
 | Name              | `subscription_name`  | Subscription display name (tenant mode)       |
 | VMs               | `vms`                | Standalone VMs (scale-set instances excluded) |
-| VMSS              | `vmss`               | VM Scale Sets                                 |
+| VMSS              | `vmss`               | Standalone VM Scale Sets (AKS-managed excluded) |
 | VMSS-Instances    | `vmss_instances`     | Live scale-set instances                      |
 | AKS-Clusters      | `aks_clusters`       | AKS clusters                                  |
 | AKS-NodePools     | `aks_nodepools`      | AKS agent pools                               |
-| AKS-Nodes         | `aks_nodes`          | AKS worker nodes (sum of pool counts)         |
+| AKS-Nodes         | `aks_nodes`          | AKS worker nodes (sum of live pool counts)    |
 | ACI-Groups        | `aci_groups`         | Azure Container Instance groups               |
 | ACI-Containers    | `aci_containers`     | Containers across all ACI groups              |
 | Functions         | `functions`          | Function apps                                 |
@@ -262,7 +267,8 @@ Use `--write-file [PATH]` to save the JSON to a file. With no path, the file is 
 3. **Count** (subscriptions scanned in parallel, up to 16 workers): each counter runs a
    subscription-wide list call — VMs, VMSS (+ instances), AKS (clusters/pools/nodes), ACI
    (groups/containers), App Service (functions/web apps), Container Apps (+ environments).
-   Scale-set instances are subtracted from the VM count so nothing is double-counted.
+   Scale-set instances are subtracted from the VM count, and AKS-managed scale sets from the
+   VMSS count, so nothing is double-counted.
 4. **Aggregate totals** and print/output in the selected format.
 
 ---

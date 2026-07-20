@@ -71,12 +71,22 @@ def count_vms(credential, subscription_id: str, locations=None) -> Dict[str, int
     return {"vms": count}
 
 
+# Tag AKS puts on every node-pool scale set it manages; used to exclude AKS
+# worker nodes from the generic VMSS bucket (they are counted under AKS instead).
+_AKS_MANAGED_VMSS_TAG = "aks-managed-poolName"
+
+
 def count_vmss(credential, subscription_id: str, locations=None) -> Dict[str, int]:
-    """Count VM Scale Sets and their live instances in a subscription.
+    """Count standalone VM Scale Sets and their live instances in a subscription.
 
     ``vmss_instances`` counts the instances that actually exist
     (``virtual_machine_scale_set_vms.list``) rather than the configured
     ``sku.capacity``, which is a desired value that can lag reality.
+
+    AKS node pools are implemented as scale sets (tagged
+    ``aks-managed-poolName``, living in the cluster's ``MC_...`` node resource
+    group); those are excluded here and counted under AKS instead, so a machine
+    is never counted both as a generic VMSS instance and an AKS node.
 
     Args:
         credential: An azure-identity credential.
@@ -91,6 +101,8 @@ def count_vmss(credential, subscription_id: str, locations=None) -> Dict[str, in
     for ss in client.virtual_machine_scale_sets.list_all():
         if locations and (ss.location or "").lower() not in locations:
             continue
+        if (ss.tags or {}).get(_AKS_MANAGED_VMSS_TAG) is not None:
+            continue
         sets += 1
         rg = rg_from_id(ss.id)
         if rg:
@@ -101,9 +113,12 @@ def count_vmss(credential, subscription_id: str, locations=None) -> Dict[str, in
 def count_aks(credential, subscription_id: str, locations=None) -> Dict[str, int]:
     """Count AKS clusters, agent pools (node pools), and nodes in a subscription.
 
-    Node count is the sum of each cluster's agent-pool ``count``. See the module
-    docstring for the autoscaler / virtual-node / Node-Autoprovisioning blind
-    spots that make this a last-known rather than live value.
+    Node count is the sum of each pool's **live** ``count`` from the per-pool
+    ``agent_pools.list`` endpoint, which reflects autoscaler-added nodes. The
+    cluster-summary ``agent_pool_profiles[].count`` is the configured/model value
+    that goes stale when the autoscaler grows a pool, so it is only used as a
+    per-cluster fallback if the per-pool call fails. Virtual-node /
+    Node-Autoprovisioning nodes remain a blind spot.
 
     Args:
         credential: An azure-identity credential.
@@ -119,7 +134,11 @@ def count_aks(credential, subscription_id: str, locations=None) -> Dict[str, int
         if locations and (c.location or "").lower() not in locations:
             continue
         clusters += 1
-        for pool in (c.agent_pool_profiles or []):
+        try:
+            pools = list(client.agent_pools.list(rg_from_id(c.id), c.name))
+        except HttpResponseError:
+            pools = c.agent_pool_profiles or []
+        for pool in pools:
             nodepools += 1
             nodes += pool.count or 0
     return {"aks_clusters": clusters, "aks_nodepools": nodepools, "aks_nodes": nodes}
